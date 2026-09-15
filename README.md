@@ -121,16 +121,16 @@ docker compose up --scale api=3
 | Phase | Feature | Status |
 |---|---|---|
 | 0 | Foundation — all containers running | ✅ |
-| 1 | Authentication (JWT) | 🔜 |
-| 2 | File & Folder Management | 🔜 |
-| 3 | File Sharing & Permissions | 🔜 |
-| 4 | File Versioning | 🔜 |
-| 5 | Chunked & Resumable Upload | 🔜 |
-| 6 | Block Hashing & Deduplication | 🔜 |
-| 7 | Redis Caching | 🔜 |
-| 8 | Real-time Notifications | 🔜 |
-| 9 | Sync & Conflict Detection | 🔜 |
-| 10 | Horizontal Scaling Demo | 🔜 |
+| 1 | Authentication (JWT) | ✅ |
+| 2 | File & Folder Management | ✅ |
+| 3 | File Sharing & Permissions | ✅ |
+| 4 | File Versioning | ✅ |
+| 5 | Chunked & Resumable Upload | ✅ |
+| 6 | Block Hashing & Deduplication | ✅ |
+| 7 | Redis Caching | ✅ |
+| 8 | Real-time Notifications | ✅ |
+| 9 | Sync & Conflict Detection | ✅ |
+| 10 | Horizontal Scaling Demo | ✅ |
 
 ---
 
