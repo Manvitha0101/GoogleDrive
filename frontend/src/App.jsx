@@ -16,6 +16,27 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Auto-refresh token on 401 Unauthorized
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true;
+      try {
+        const authRes = await axios.post('/api/auth/demo');
+        const newToken = authRes.data.access_token;
+        localStorage.setItem('cloudvault_token', newToken);
+        originalRequest.headers.Authorization = `Bearer ${newToken}`;
+        return api(originalRequest);
+      } catch (err) {
+        console.warn('Auto token renewal failed:', err);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Format byte size helper
 function formatBytes(bytes, decimals = 1) {
   if (!bytes || bytes === 0 || bytes === '0') return '0 B';
@@ -26,35 +47,50 @@ function formatBytes(bytes, decimals = 1) {
   return `${parseFloat((Number(bytes) / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 }
 
-// Get file type icon and color
+// Get file type icon, color and description
 function getFileMeta(name, mimeType = '') {
   const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
   if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(ext) || mimeType.startsWith('image/')) {
-    return { type: 'image', color: '#38bdf8', icon: '🖼️', label: 'Image' };
+    return { type: 'image', color: '#0284c7', bg: 'rgba(2, 132, 199, 0.12)', icon: '🖼️', label: 'Image' };
   }
   if (['pdf'].includes(ext) || mimeType.includes('pdf')) {
-    return { type: 'pdf', color: '#f87171', icon: '📄', label: 'PDF' };
+    return { type: 'pdf', color: '#dc2626', bg: 'rgba(220, 38, 38, 0.12)', icon: '📄', label: 'PDF' };
   }
   if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext) || mimeType.includes('zip') || mimeType.includes('tar')) {
-    return { type: 'archive', color: '#fbbf24', icon: '📦', label: 'Archive' };
+    return { type: 'archive', color: '#d97706', bg: 'rgba(217, 119, 6, 0.12)', icon: '📦', label: 'Archive' };
   }
   if (['mp4', 'mkv', 'mov', 'webm'].includes(ext) || mimeType.startsWith('video/')) {
-    return { type: 'video', color: '#c084fc', icon: '🎬', label: 'Video' };
+    return { type: 'video', color: '#7c3aed', bg: 'rgba(124, 58, 237, 0.12)', icon: '🎬', label: 'Video' };
   }
   if (['mp3', 'wav', 'flac', 'ogg'].includes(ext) || mimeType.startsWith('audio/')) {
-    return { type: 'audio', color: '#a78bfa', icon: '🎵', label: 'Audio' };
+    return { type: 'audio', color: '#9333ea', bg: 'rgba(147, 51, 234, 0.12)', icon: '🎵', label: 'Audio' };
   }
   if (['js', 'jsx', 'ts', 'tsx', 'py', 'json', 'html', 'css', 'sql', 'md'].includes(ext)) {
-    return { type: 'code', color: '#34d399', icon: '💻', label: 'Code' };
+    return { type: 'code', color: '#059669', bg: 'rgba(5, 150, 105, 0.12)', icon: '💻', label: 'Code' };
   }
   if (['doc', 'docx', 'txt', 'rtf'].includes(ext)) {
-    return { type: 'document', color: '#60a5fa', icon: '📝', label: 'Document' };
+    return { type: 'document', color: '#2563eb', bg: 'rgba(37, 99, 235, 0.12)', icon: '📝', label: 'Document' };
   }
-  return { type: 'file', color: '#94a3b8', icon: '📎', label: 'File' };
+  return { type: 'file', color: '#64748b', bg: 'rgba(100, 116, 139, 0.12)', icon: '📎', label: 'File' };
 }
 
 export default function App() {
-  // ─── State ─────────────────────────────────────────────────────────────────
+  // ─── Theme State (Light & Dark Mode) ───────────────────────────────────────
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem('cloudvault_theme') || 'light';
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('cloudvault_theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+    addNotification(`Switched to ${theme === 'light' ? 'Dark' : 'Light'} theme`, 'info');
+  };
+
+  // ─── User & Auth State ─────────────────────────────────────────────────────
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authModal, setAuthModal] = useState(null); // 'login' | 'register' | null
@@ -76,24 +112,55 @@ export default function App() {
 
   // Modals & UI Controls
   const [showNewMenu, setShowNewMenu] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('general'); // 'general' | 'appearance' | 'sharing' | 'system'
   const [newFolderModal, setNewFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+
+  // Share Modal & Options
   const [shareModalItem, setShareModalItem] = useState(null);
   const [shareLink, setShareLink] = useState('');
   const [shareEmail, setShareEmail] = useState('');
+  const [sharePermission, setSharePermission] = useState('viewer'); // 'viewer' | 'editor'
+  const [allowCopyOption, setAllowCopyOption] = useState(true);
+  const [allowDownloadOption, setAllowDownloadOption] = useState(true);
+  const [copiedLinkFeedback, setCopiedLinkFeedback] = useState(false);
+
+  // Rename / Edit Item
   const [renameItem, setRenameItem] = useState(null);
   const [renameNewName, setRenameNewName] = useState('');
+
+  // Version History Modal
   const [versionModalFile, setVersionModalFile] = useState(null);
   const [fileVersions, setFileVersions] = useState([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
+
+  // System Health
   const [systemHealth, setSystemHealth] = useState(null);
   const [showHealthModal, setShowHealthModal] = useState(false);
+
+  // Notifications / Toasts
   const [notifications, setNotifications] = useState([]);
+
+  // Active Context Menu
+  const [activeMenuId, setActiveMenuId] = useState(null);
 
   // Drag & drop upload & Chunked upload
   const [isDragging, setIsDragging] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null); // { name, percent, isChunked }
   const fileInputRef = useRef(null);
+
+  // Close menus on outside click
+  useEffect(() => {
+    const handleOutsideClick = () => {
+      setShowUserMenu(false);
+      setShowNewMenu(false);
+      setActiveMenuId(null);
+    };
+    window.addEventListener('click', handleOutsideClick);
+    return () => window.removeEventListener('click', handleOutsideClick);
+  }, []);
 
   // ─── Initialize User / Auth Check ──────────────────────────────────────────
   useEffect(() => {
@@ -126,12 +193,12 @@ export default function App() {
       socket.emit('join_user', user.id);
 
       socket.on('file_uploaded', (e) => {
-        addNotification(`New file uploaded: ${e.payload?.name || 'File'}`, 'info');
+        addNotification(`New file uploaded: ${e.payload?.name || 'File'}`, 'success');
         loadContent();
       });
 
       socket.on('file_shared', (e) => {
-        addNotification(`A file was shared with you!`, 'success');
+        addNotification(`A file was shared with you!`, 'info');
         if (currentTab === 'shared') loadContent();
       });
 
@@ -187,7 +254,7 @@ export default function App() {
         setBreadcrumbs([{ id: null, name: 'Shared with me' }]);
       }
     } catch (err) {
-      addNotification('Error loading files: ' + (err.response?.data?.message || err.message), 'error');
+      addNotification('Error loading items: ' + (err.response?.data?.message || err.message), 'error');
     } finally {
       setLoading(false);
     }
@@ -199,13 +266,15 @@ export default function App() {
     }
   }, [user, currentTab, currentFolderId, searchQuery]);
 
-  // ─── Notifications helper ──────────────────────────────────────────────────
-  const addNotification = (message, type = 'info') => {
+  // ─── Notifications / Toast Helper ──────────────────────────────────────────
+  const addNotification = (message, type = 'info', icon = null) => {
     const id = Date.now() + Math.random();
-    setNotifications((prev) => [{ id, message, type }, ...prev]);
+    const defaultIcon =
+      type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️';
+    setNotifications((prev) => [{ id, message, type, icon: icon || defaultIcon }, ...prev]);
     setTimeout(() => {
       setNotifications((prev) => prev.filter((n) => n.id !== id));
-    }, 5000);
+    }, 4500);
   };
 
   // ─── Auth Handlers ─────────────────────────────────────────────────────────
@@ -219,7 +288,7 @@ export default function App() {
       setUser(res.data.user);
       setAuthModal(null);
       setAuthForm({ email: '', password: '', display_name: '' });
-      addNotification(`Welcome, ${res.data.user.display_name}!`, 'success');
+      addNotification(`Welcome back, ${res.data.user.display_name}!`, 'success', '👋');
     } catch (err) {
       setAuthError(err.response?.data?.message || 'Authentication failed');
     }
@@ -231,7 +300,7 @@ export default function App() {
       localStorage.setItem('cloudvault_token', res.data.access_token);
       setUser(res.data.user);
       setAuthModal(null);
-      addNotification('Logged in as Demo User!', 'success');
+      addNotification('Logged in as Demo User!', 'success', '⚡');
     } catch (err) {
       addNotification('Demo login failed: ' + err.message, 'error');
     }
@@ -243,7 +312,9 @@ export default function App() {
     setCurrentFolderId(null);
     setFolders([]);
     setFiles([]);
-    addNotification('You have logged out', 'info');
+    setShowUserMenu(false);
+    setShowSettingsModal(false);
+    addNotification('You have logged out safely', 'info', '🚪');
   };
 
   // ─── Folder Actions ────────────────────────────────────────────────────────
@@ -255,10 +326,11 @@ export default function App() {
         name: newFolderName.trim(),
         parent_id: currentFolderId || null,
       });
+      const name = newFolderName.trim();
       setNewFolderModal(false);
       setNewFolderName('');
       loadContent();
-      addNotification(`Folder created`, 'success');
+      addNotification(`Folder "${name}" created successfully!`, 'success', '📁');
     } catch (err) {
       addNotification(err.response?.data?.message || 'Failed to create folder', 'error');
     }
@@ -269,7 +341,7 @@ export default function App() {
     setSearchQuery('');
   };
 
-  // ─── File Upload (Standard & Chunked Resumable - Phase 5) ───────────────────
+  // ─── File Upload (Standard & Chunked Resumable) ─────────────────────────────
   const handleFileUpload = async (fileList) => {
     if (!fileList || fileList.length === 0) return;
     const file = fileList[0];
@@ -277,8 +349,9 @@ export default function App() {
     const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
     const isLargeFile = file.size > 5 * 1024 * 1024; // > 5 MB use chunked upload flow
 
+    addNotification(`Starting upload for "${file.name}"...`, 'info', '📤');
+
     if (isLargeFile) {
-      // ─── Chunked Resumable Upload Flow ─────────────────────────────────────
       try {
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         setUploadProgress({ name: file.name, percent: 5, isChunked: true });
@@ -316,18 +389,17 @@ export default function App() {
         await api.post(`/uploads/${sessionId}/complete`);
 
         setUploadProgress({ name: file.name, percent: 100, isChunked: true });
-        setTimeout(() => setUploadProgress(null), 1500);
+        setTimeout(() => setUploadProgress(null), 1200);
 
         loadContent();
         const userRes = await api.get('/auth/me');
         setUser(userRes.data.user);
-        addNotification(`Chunked upload completed for "${file.name}"!`, 'success');
+        addNotification(`Chunked upload completed for "${file.name}"!`, 'success', '⚡');
       } catch (err) {
         setUploadProgress(null);
         addNotification(err.response?.data?.message || 'Chunked upload failed', 'error');
       }
     } else {
-      // ─── Standard Multipart Upload Flow ───────────────────────────────────
       const formData = new FormData();
       formData.append('file', file);
       if (currentFolderId) {
@@ -345,11 +417,11 @@ export default function App() {
           },
         });
         setUploadProgress({ name: file.name, percent: 100, isChunked: false });
-        setTimeout(() => setUploadProgress(null), 1500);
+        setTimeout(() => setUploadProgress(null), 1200);
         loadContent();
         const userRes = await api.get('/auth/me');
         setUser(userRes.data.user);
-        addNotification(`Uploaded "${file.name}" successfully!`, 'success');
+        addNotification(`File "${file.name}" uploaded successfully!`, 'success', '🎉');
       } catch (err) {
         setUploadProgress(null);
         addNotification(err.response?.data?.message || 'File upload failed', 'error');
@@ -358,16 +430,40 @@ export default function App() {
   };
 
   // ─── File Actions ──────────────────────────────────────────────────────────
-  const handleDownload = (fileId, fileName) => {
-    window.open(`/api/files/${fileId}/download`, '_blank');
-    addNotification(`Downloading "${fileName}"...`, 'info');
+  const handleDownload = async (fileId, fileName) => {
+    addNotification(`Preparing download for "${fileName}"...`, 'info', '⬇️');
+    try {
+      const res = await api.get(`/files/${fileId}/download`, {
+        responseType: 'blob',
+      });
+      const blob = new Blob([res.data]);
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(blobUrl);
+      addNotification(`Downloaded "${fileName}" successfully!`, 'success', '✅');
+    } catch (err) {
+      const token = localStorage.getItem('cloudvault_token');
+      const downloadUrl = `/api/files/${fileId}/download?auth_token=${token}`;
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      addNotification(`Download started: "${fileName}"`, 'success', '✅');
+    }
   };
 
   const handleTrashFile = async (fileId, fileName) => {
     try {
       await api.delete(`/files/${fileId}`);
       loadContent();
-      addNotification(`Moved "${fileName}" to trash`, 'info');
+      addNotification(`Moved "${fileName}" to Trash`, 'info', '🗑️');
     } catch (err) {
       addNotification(err.response?.data?.message || 'Failed to move to trash', 'error');
     }
@@ -377,18 +473,18 @@ export default function App() {
     try {
       await api.post(`/files/${fileId}/restore`);
       loadContent();
-      addNotification(`Restored "${fileName}"`, 'success');
+      addNotification(`Restored "${fileName}" to My Drive!`, 'success', '♻️');
     } catch (err) {
       addNotification(err.response?.data?.message || 'Failed to restore file', 'error');
     }
   };
 
   const handlePermanentDeleteFile = async (fileId, fileName) => {
-    if (!confirm(`Permanently delete "${fileName}"? This cannot be undone.`)) return;
+    if (!confirm(`Are you sure you want to permanently delete "${fileName}"? This cannot be undone.`)) return;
     try {
       await api.delete(`/files/${fileId}/permanent`);
       loadContent();
-      addNotification(`Deleted "${fileName}" permanently`, 'info');
+      addNotification(`Permanently deleted "${fileName}"`, 'info', '❌');
     } catch (err) {
       addNotification(err.response?.data?.message || 'Failed to delete file', 'error');
     }
@@ -398,7 +494,7 @@ export default function App() {
     try {
       await api.delete(`/folders/${folderId}`);
       loadContent();
-      addNotification(`Moved folder "${folderName}" to trash`, 'info');
+      addNotification(`Moved folder "${folderName}" to Trash`, 'info', '🗑️');
     } catch (err) {
       addNotification(err.response?.data?.message || 'Failed to move folder to trash', 'error');
     }
@@ -408,23 +504,25 @@ export default function App() {
   const handleRenameSubmit = async (e) => {
     e.preventDefault();
     if (!renameItem || !renameNewName.trim()) return;
+    const oldName = renameItem.name;
+    const newName = renameNewName.trim();
     try {
       if (renameItem.type === 'folder') {
-        await api.patch(`/folders/${renameItem.id}`, { name: renameNewName.trim() });
+        await api.patch(`/folders/${renameItem.id}`, { name: newName });
       } else {
         await api.patch(
           `/files/${renameItem.id}`,
-          { name: renameNewName.trim() },
+          { name: newName },
           { headers: renameItem.etag ? { 'If-Match': renameItem.etag } : {} }
         );
       }
       setRenameItem(null);
       setRenameNewName('');
       loadContent();
-      addNotification(`Renamed successfully`, 'success');
+      addNotification(`Renamed "${oldName}" to "${newName}"`, 'success', '✏️');
     } catch (err) {
       if (err.response?.status === 412) {
-        addNotification('Conflict: File was modified by another session. Refreshed.', 'error');
+        addNotification('Conflict: Item was modified by another session. Refreshed.', 'error');
         loadContent();
       } else {
         addNotification(err.response?.data?.message || 'Failed to rename', 'error');
@@ -432,13 +530,14 @@ export default function App() {
     }
   };
 
-  // ─── Version History (Phase 4) ─────────────────────────────────────────────
+  // ─── Version History ───────────────────────────────────────────────────────
   const handleOpenVersions = async (file) => {
     setVersionModalFile(file);
     setVersionsLoading(true);
     try {
       const res = await api.get(`/files/${file.id}/versions`);
       setFileVersions(res.data.versions || []);
+      addNotification(`Loaded versions for "${file.name}"`, 'info', '📜');
     } catch (err) {
       addNotification('Could not load version history', 'error');
     } finally {
@@ -450,7 +549,7 @@ export default function App() {
     if (!versionModalFile) return;
     try {
       await api.post(`/files/${versionModalFile.id}/versions/${versionNumber}/restore`);
-      addNotification(`Restored to version ${versionNumber}!`, 'success');
+      addNotification(`Restored "${versionModalFile.name}" to version ${versionNumber}!`, 'success', '♻️');
       setVersionModalFile(null);
       loadContent();
     } catch (err) {
@@ -463,32 +562,84 @@ export default function App() {
     setShareModalItem({ ...item, itemType });
     setShareLink('');
     setShareEmail('');
+    setCopiedLinkFeedback(false);
+    try {
+      let res;
+      try {
+        res = await api.post('/shares', {
+          item_id: item.id,
+          item_type: itemType,
+          share_type: 'link',
+          permission: sharePermission,
+        });
+      } catch (postErr) {
+        if (postErr.response?.status === 401) {
+          const authRes = await axios.post('/api/auth/demo');
+          const newToken = authRes.data.access_token;
+          localStorage.setItem('cloudvault_token', newToken);
+          setUser(authRes.data.user);
+          res = await api.post('/shares', {
+            item_id: item.id,
+            item_type: itemType,
+            share_type: 'link',
+            permission: sharePermission,
+          });
+        } else {
+          throw postErr;
+        }
+      }
+      const origin = window.location.origin;
+      setShareLink(`${origin}/api/shares/public/${res.data.share.share_token}`);
+      addNotification(`Share link generated for "${item.name}"`, 'success', '🔗');
+    } catch (err) {
+      console.error('Error generating share link:', err);
+      addNotification('Could not generate share link: ' + (err.response?.data?.message || err.message), 'error');
+    }
+  };
+
+  const handlePermissionChange = async (newPermission) => {
+    setSharePermission(newPermission);
+    if (!shareModalItem) return;
     try {
       const res = await api.post('/shares', {
-        item_id: item.id,
-        item_type: itemType,
+        item_id: shareModalItem.id,
+        item_type: shareModalItem.itemType,
         share_type: 'link',
-        permission: 'viewer',
+        permission: newPermission,
       });
       const origin = window.location.origin;
       setShareLink(`${origin}/api/shares/public/${res.data.share.share_token}`);
+      addNotification(`Permission updated to: ${newPermission === 'editor' ? 'Editor' : 'Viewer'}`, 'info', '🔒');
     } catch (err) {
-      addNotification('Could not generate share link', 'error');
+      console.warn('Could not update permission link:', err);
     }
+  };
+
+  const handleCopyShareLink = () => {
+    if (!shareLink) return;
+    navigator.clipboard.writeText(shareLink);
+    setCopiedLinkFeedback(true);
+    setTimeout(() => setCopiedLinkFeedback(false), 2500);
+    addNotification(
+      `Share link copied to clipboard! Permission: ${sharePermission === 'editor' ? 'Editor' : 'Viewer'} (Allow copy: ${allowCopyOption ? 'Yes' : 'No'})`,
+      'success',
+      '📋'
+    );
   };
 
   const handleShareByEmail = async (e) => {
     e.preventDefault();
     if (!shareEmail.trim() || !shareModalItem) return;
+    const email = shareEmail.trim();
     try {
       await api.post('/shares', {
         item_id: shareModalItem.id,
         item_type: shareModalItem.itemType,
         share_type: 'user',
-        email: shareEmail.trim(),
-        permission: 'viewer',
+        email,
+        permission: sharePermission,
       });
-      addNotification(`Shared with ${shareEmail}!`, 'success');
+      addNotification(`Shared "${shareModalItem.name}" with ${email} (${sharePermission})!`, 'success', '💌');
       setShareEmail('');
     } catch (err) {
       addNotification(err.response?.data?.message || 'Failed to share with user', 'error');
@@ -522,76 +673,83 @@ export default function App() {
   // ─── Render Guest Landing / Auth Modal ──────────────────────────────────────
   if (!user && !authLoading) {
     return (
-      <div style={styles.landingPage}>
-        <div style={styles.blob1} />
-        <div style={styles.blob2} />
+      <div style={themeStyles[theme].landingPage}>
+        <div style={themeStyles[theme].blob1} />
+        <div style={themeStyles[theme].blob2} />
 
-        <div style={styles.landingContainer}>
-          <div style={styles.logoBadge}>
-            <span style={styles.logoIcon}>☁️</span>
-            <span style={styles.brandTitle}>CloudVault</span>
+        <div style={themeStyles[theme].landingContainer}>
+          <div style={themeStyles[theme].logoBadge}>
+            <span style={{ fontSize: 24 }}>☁️</span>
+            <span style={themeStyles[theme].brandTitle}>CloudVault</span>
           </div>
 
-          <h1 style={styles.heroHeading}>
+          <h1 style={themeStyles[theme].heroHeading}>
             Scalable Cloud File Storage <br />
-            <span style={styles.gradientText}>& Synchronization System</span>
+            <span style={themeStyles[theme].gradientText}>& Instant Synchronization</span>
           </h1>
 
-          <p style={styles.heroSubheading}>
+          <p style={themeStyles[theme].heroSubheading}>
             Full-stack, enterprise-grade cloud drive with multi-part chunked uploads, block-level deduplication,
             real-time Socket.IO notifications, and Redis caching.
           </p>
 
-          <div style={styles.ctaRow}>
-            <button style={styles.primaryBtn} onClick={() => setAuthModal('register')}>
+          <div style={themeStyles[theme].ctaRow}>
+            <button style={themeStyles[theme].primaryBtn} onClick={() => setAuthModal('register')}>
               Create Free Account
             </button>
-            <button style={styles.secondaryBtn} onClick={() => setAuthModal('login')}>
+            <button style={themeStyles[theme].secondaryBtn} onClick={() => setAuthModal('login')}>
               Sign In
             </button>
-            <button style={styles.demoBtn} onClick={handleDemoLogin}>
+            <button style={themeStyles[theme].demoBtn} onClick={handleDemoLogin}>
               ⚡ One-Click Demo Mode
+            </button>
+            <button
+              style={themeStyles[theme].themeToggleLanding}
+              onClick={toggleTheme}
+              title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
+            >
+              {theme === 'light' ? '🌙 Dark Mode' : '☀️ Light Mode'}
             </button>
           </div>
 
-          <div style={styles.featuresGrid}>
-            <div style={styles.featureCard}>
-              <div style={styles.featureIcon}>⚡</div>
-              <h3 style={styles.featureTitle}>Resumable Chunked Uploads</h3>
-              <p style={styles.featureDesc}>Automatic chunk slicing for large files with resume and deduplication.</p>
+          <div style={themeStyles[theme].featuresGrid}>
+            <div style={themeStyles[theme].featureCard}>
+              <div style={{ fontSize: 28, marginBottom: 12 }}>⚡</div>
+              <h3 style={themeStyles[theme].featureTitle}>Resumable Chunked Uploads</h3>
+              <p style={themeStyles[theme].featureDesc}>Automatic chunk slicing for large files with resume and deduplication.</p>
             </div>
-            <div style={styles.featureCard}>
-              <div style={styles.featureIcon}>📜</div>
-              <h3 style={styles.featureTitle}>Full Version History</h3>
-              <p style={styles.featureDesc}>Revert to any historical version seamlessly with audit checksum verification.</p>
+            <div style={themeStyles[theme].featureCard}>
+              <div style={{ fontSize: 28, marginBottom: 12 }}>📜</div>
+              <h3 style={themeStyles[theme].featureTitle}>Full Version History</h3>
+              <p style={themeStyles[theme].featureDesc}>Revert to any historical version seamlessly with audit checksum verification.</p>
             </div>
-            <div style={styles.featureCard}>
-              <div style={styles.featureIcon}>🔔</div>
-              <h3 style={styles.featureTitle}>Real-Time Event Sync</h3>
-              <p style={styles.featureDesc}>WebSocket and Redis Pub/Sub push notifications on share and upload events.</p>
+            <div style={themeStyles[theme].featureCard}>
+              <div style={{ fontSize: 28, marginBottom: 12 }}>🔔</div>
+              <h3 style={themeStyles[theme].featureTitle}>Real-Time Event Sync</h3>
+              <p style={themeStyles[theme].featureDesc}>WebSocket and Redis Pub/Sub push notifications on share and upload events.</p>
             </div>
           </div>
         </div>
 
         {/* Auth Modal */}
         {authModal && (
-          <div style={styles.modalOverlay} onClick={() => setAuthModal(null)}>
-            <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-              <div style={styles.modalHeader}>
-                <h2 style={styles.modalTitle}>
+          <div style={themeStyles[theme].modalOverlay} onClick={() => setAuthModal(null)}>
+            <div style={themeStyles[theme].modalContent} onClick={(e) => e.stopPropagation()}>
+              <div style={themeStyles[theme].modalHeader}>
+                <h2 style={themeStyles[theme].modalTitle}>
                   {authModal === 'register' ? 'Create your Account' : 'Welcome Back'}
                 </h2>
-                <button style={styles.closeBtn} onClick={() => setAuthModal(null)}>✕</button>
+                <button style={themeStyles[theme].closeBtn} onClick={() => setAuthModal(null)}>✕</button>
               </div>
 
-              {authError && <div style={styles.errorAlert}>{authError}</div>}
+              {authError && <div style={themeStyles[theme].errorAlert}>{authError}</div>}
 
-              <form onSubmit={handleAuthSubmit} style={styles.form}>
+              <form onSubmit={handleAuthSubmit} style={themeStyles[theme].form}>
                 {authModal === 'register' && (
-                  <div style={styles.inputGroup}>
-                    <label style={styles.label}>Full Name</label>
+                  <div style={themeStyles[theme].inputGroup}>
+                    <label style={themeStyles[theme].label}>Full Name</label>
                     <input
-                      style={styles.input}
+                      style={themeStyles[theme].input}
                       type="text"
                       placeholder="Jane Doe"
                       required
@@ -601,10 +759,10 @@ export default function App() {
                   </div>
                 )}
 
-                <div style={styles.inputGroup}>
-                  <label style={styles.label}>Email Address</label>
+                <div style={themeStyles[theme].inputGroup}>
+                  <label style={themeStyles[theme].label}>Email Address</label>
                   <input
-                    style={styles.input}
+                    style={themeStyles[theme].input}
                     type="email"
                     placeholder="user@example.com"
                     required
@@ -613,10 +771,10 @@ export default function App() {
                   />
                 </div>
 
-                <div style={styles.inputGroup}>
-                  <label style={styles.label}>Password</label>
+                <div style={themeStyles[theme].inputGroup}>
+                  <label style={themeStyles[theme].label}>Password</label>
                   <input
-                    style={styles.input}
+                    style={themeStyles[theme].input}
                     type="password"
                     placeholder="••••••••"
                     required
@@ -625,20 +783,20 @@ export default function App() {
                   />
                 </div>
 
-                <button style={styles.modalSubmitBtn} type="submit">
-                  {authModal === 'register' ? 'Register' : 'Sign In'}
+                <button style={themeStyles[theme].modalSubmitBtn} type="submit">
+                  {authModal === 'register' ? 'Register Account' : 'Sign In'}
                 </button>
 
-                <div style={styles.modalFooter}>
+                <div style={themeStyles[theme].modalFooter}>
                   {authModal === 'register' ? (
-                    <span style={styles.footerText}>
+                    <span style={themeStyles[theme].footerText}>
                       Already have an account?{' '}
-                      <a style={styles.footerLink} onClick={() => setAuthModal('login')}>Sign In</a>
+                      <a style={themeStyles[theme].footerLink} onClick={() => setAuthModal('login')}>Sign In</a>
                     </span>
                   ) : (
-                    <span style={styles.footerText}>
+                    <span style={themeStyles[theme].footerText}>
                       Don't have an account?{' '}
-                      <a style={styles.footerLink} onClick={() => setAuthModal('register')}>Sign Up</a>
+                      <a style={themeStyles[theme].footerLink} onClick={() => setAuthModal('register')}>Sign Up</a>
                     </span>
                   )}
                 </div>
@@ -651,9 +809,11 @@ export default function App() {
   }
 
   // ─── Main Drive Application ────────────────────────────────────────────────
+  const S = themeStyles[theme];
+
   return (
     <div
-      style={styles.appContainer}
+      style={S.appContainer}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -666,75 +826,89 @@ export default function App() {
       />
 
       {isDragging && (
-        <div style={styles.dragOverlay}>
-          <div style={styles.dragBox}>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>📤</div>
-            <h2 style={{ fontSize: 20, fontWeight: 700 }}>Drop files to upload immediately</h2>
-            <p style={{ color: 'var(--color-text-muted)', marginTop: 4 }}>Large files will automatically use chunked resumable upload</p>
+        <div style={S.dragOverlay}>
+          <div style={S.dragBox}>
+            <div style={{ fontSize: 52, marginBottom: 12 }}>📤</div>
+            <h2 style={{ fontSize: 22, fontWeight: 700 }}>Drop files to upload immediately</h2>
+            <p style={{ color: 'var(--color-text-muted)', marginTop: 6, fontSize: 14 }}>
+              Automatic chunked resumable upload for large files
+            </p>
           </div>
         </div>
       )}
 
-      {/* Upload Toast */}
+      {/* Upload Toast Indicator */}
       {uploadProgress && (
-        <div style={styles.uploadToast}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>
-              {uploadProgress.isChunked ? '⚡ Chunked: ' : 'Uploading: '} {uploadProgress.name}
+        <div style={S.uploadToast}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 }}>
+              {uploadProgress.isChunked ? '⚡ Chunked: ' : '📤 Uploading: '} {uploadProgress.name}
             </span>
-            <span style={{ fontSize: 13, color: 'var(--color-accent)' }}>{uploadProgress.percent}%</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-primary)' }}>{uploadProgress.percent}%</span>
           </div>
-          <div style={styles.progressBarBg}>
-            <div style={{ ...styles.progressBarFill, width: `${uploadProgress.percent}%` }} />
+          <div style={S.progressBarBg}>
+            <div style={{ ...S.progressBarFill, width: `${uploadProgress.percent}%` }} />
           </div>
         </div>
       )}
 
-      {/* Notifications */}
-      <div style={styles.notificationsContainer}>
+      {/* Toast Notifications System */}
+      <div style={S.notificationsContainer}>
         {notifications.map((n) => (
           <div
             key={n.id}
+            className="animate-toast"
             style={{
-              ...styles.toast,
+              ...S.toast,
               borderLeft: `4px solid ${n.type === 'error' ? 'var(--color-error)' : n.type === 'success' ? 'var(--color-success)' : 'var(--color-primary)'}`,
             }}
           >
-            {n.message}
+            <span style={{ fontSize: 16 }}>{n.icon}</span>
+            <span style={{ flex: 1, fontSize: 13, fontWeight: 500, lineHeight: 1.4 }}>{n.message}</span>
           </div>
         ))}
       </div>
 
-      {/* Header */}
-      <header style={styles.topHeader}>
-        <div style={styles.headerLeft}>
-          <div style={styles.brandGroup}>
-            <div style={styles.brandIconWrapper}>☁️</div>
-            <span style={styles.brandName}>CloudVault</span>
+      {/* Top Header */}
+      <header style={S.topHeader}>
+        <div style={S.headerLeft}>
+          <div style={S.brandGroup}>
+            <div style={S.brandIconWrapper}>☁️</div>
+            <span style={S.brandName}>CloudVault</span>
           </div>
         </div>
 
-        <div style={styles.headerCenter}>
-          <div style={styles.searchBar}>
-            <span style={styles.searchIcon}>🔍</span>
+        <div style={S.headerCenter}>
+          <div style={S.searchBar}>
+            <span style={S.searchIcon}>🔍</span>
             <input
-              style={styles.searchInput}
+              style={S.searchInput}
               type="text"
-              placeholder="Search in Drive..."
+              placeholder="Search in Drive... (Press '/' to search)"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
             {searchQuery && (
-              <button style={styles.clearSearchBtn} onClick={() => setSearchQuery('')}>✕</button>
+              <button style={S.clearSearchBtn} onClick={() => setSearchQuery('')} title="Clear search">✕</button>
             )}
           </div>
         </div>
 
-        <div style={styles.headerRight}>
+        <div style={S.headerRight}>
+          {/* Theme Switcher Button */}
           <button
-            style={styles.healthBadge}
+            style={S.headerIconBtn}
+            onClick={toggleTheme}
+            title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
+          >
+            {theme === 'light' ? '🌙' : '☀️'}
+          </button>
+
+          {/* System Health */}
+          <button
+            style={S.healthBadge}
             onClick={() => setShowHealthModal(true)}
-            title="System Status"
+            title="System Diagnostics & Health"
           >
             <span
               style={{
@@ -745,121 +919,229 @@ export default function App() {
                 display: 'inline-block',
               }}
             />
-            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>System Health</span>
+            <span style={{ fontSize: 12, fontWeight: 600 }}>System Health</span>
           </button>
 
-          <div style={styles.userProfile}>
-            <div style={styles.avatar}>
-              {user?.display_name ? user.display_name.charAt(0).toUpperCase() : 'U'}
-            </div>
-            <div style={styles.userInfo}>
-              <span style={styles.userName}>{user?.display_name}</span>
-              <span style={styles.userEmail}>{user?.email}</span>
-            </div>
-            <button style={styles.logoutBtn} onClick={handleLogout} title="Sign Out">
-              🚪
+          {/* Quick Settings Icon */}
+          <button
+            style={S.headerIconBtn}
+            onClick={() => {
+              setShowSettingsModal(true);
+              setShowUserMenu(false);
+            }}
+            title="Settings & Preferences"
+          >
+            ⚙️
+          </button>
+
+          {/* User Profile Pill & Dropdown */}
+          <div style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
+            <button
+              style={S.userProfileBtn}
+              onClick={() => setShowUserMenu(!showUserMenu)}
+              title="Account, Settings & Logout"
+            >
+              <div style={S.avatar}>
+                {user?.display_name ? user.display_name.charAt(0).toUpperCase() : 'U'}
+              </div>
+              <div style={S.userInfo}>
+                <span style={S.userName}>{user?.display_name || 'User'}</span>
+                <span style={S.userBadge}>Demo Account</span>
+              </div>
+              <span style={{ fontSize: 12, opacity: 0.6, marginLeft: 2 }}>▾</span>
             </button>
+
+            {/* User Dropdown Menu */}
+            {showUserMenu && (
+              <div className="animate-slide-down" style={S.userMenuDropdown}>
+                <div style={S.userMenuHeader}>
+                  <div style={{ ...S.avatar, width: 44, height: 44, fontSize: 18 }}>
+                    {user?.display_name ? user.display_name.charAt(0).toUpperCase() : 'U'}
+                  </div>
+                  <div style={{ overflow: 'hidden' }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{user?.display_name}</div>
+                    <div style={{ fontSize: 12, color: 'var(--color-text-muted)', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                      {user?.email}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Mini Storage Indicator inside menu */}
+                <div style={S.userMenuStorage}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4, fontWeight: 600 }}>
+                    <span>Cloud Storage</span>
+                    <span>{quotaPercent}% used</span>
+                  </div>
+                  <div style={S.storageBarBg}>
+                    <div style={{ ...S.storageBarFill, width: `${quotaPercent}%` }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                    {formatBytes(usedBytes)} of {formatBytes(totalQuota)} used
+                  </div>
+                </div>
+
+                <div style={S.userMenuDivider} />
+
+                {/* Actions */}
+                <button
+                  style={S.userMenuItem}
+                  onClick={() => {
+                    setShowSettingsModal(true);
+                    setShowUserMenu(false);
+                  }}
+                >
+                  <span style={{ fontSize: 16 }}>⚙️</span>
+                  <span>Settings & Preferences</span>
+                </button>
+
+                <button
+                  style={S.userMenuItem}
+                  onClick={() => {
+                    toggleTheme();
+                    setShowUserMenu(false);
+                  }}
+                >
+                  <span style={{ fontSize: 16 }}>{theme === 'light' ? '🌙' : '☀️'}</span>
+                  <span>Switch to {theme === 'light' ? 'Dark' : 'Light'} Mode</span>
+                </button>
+
+                <button
+                  style={S.userMenuItem}
+                  onClick={() => {
+                    setShowHealthModal(true);
+                    setShowUserMenu(false);
+                  }}
+                >
+                  <span style={{ fontSize: 16 }}>🩺</span>
+                  <span>System Diagnostics</span>
+                </button>
+
+                <div style={S.userMenuDivider} />
+
+                <button
+                  style={{ ...S.userMenuItem, color: 'var(--color-error)' }}
+                  onClick={handleLogout}
+                >
+                  <span style={{ fontSize: 16 }}>🚪</span>
+                  <span style={{ fontWeight: 600 }}>Sign Out / Logout</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>
 
       {/* Main Layout */}
-      <div style={styles.mainLayout}>
-        <aside style={styles.sidebar}>
-          <div style={styles.newBtnContainer}>
+      <div style={S.mainLayout}>
+        {/* Sidebar */}
+        <aside style={S.sidebar}>
+          <div style={S.newBtnContainer} onClick={(e) => e.stopPropagation()}>
             <button
-              style={styles.newButton}
+              style={S.newButton}
               onClick={() => setShowNewMenu(!showNewMenu)}
             >
-              <span style={{ fontSize: 18, marginRight: 8 }}>+</span>
+              <span style={{ fontSize: 20, marginRight: 8, fontWeight: 300 }}>+</span>
               <span>New</span>
             </button>
 
             {showNewMenu && (
-              <div style={styles.newDropdown}>
+              <div className="animate-slide-down" style={S.newDropdown}>
                 <button
-                  style={styles.dropdownItem}
+                  style={S.dropdownItem}
                   onClick={() => {
                     setShowNewMenu(false);
                     setNewFolderModal(true);
                   }}
                 >
-                  <span style={{ marginRight: 10 }}>📁</span>
+                  <span style={{ marginRight: 10, fontSize: 16 }}>📁</span>
                   <span>New Folder</span>
                 </button>
                 <button
-                  style={styles.dropdownItem}
+                  style={S.dropdownItem}
                   onClick={() => {
                     setShowNewMenu(false);
                     fileInputRef.current?.click();
                   }}
                 >
-                  <span style={{ marginRight: 10 }}>📄</span>
-                  <span>File Upload</span>
+                  <span style={{ marginRight: 10, fontSize: 16 }}>📄</span>
+                  <span>Upload File</span>
                 </button>
               </div>
             )}
           </div>
 
-          <nav style={styles.navMenu}>
+          <nav style={S.navMenu}>
             <button
-              style={{ ...styles.navItem, ...(currentTab === 'drive' ? styles.navItemActive : {}) }}
+              style={{ ...S.navItem, ...(currentTab === 'drive' ? S.navItemActive : {}) }}
               onClick={() => {
                 setCurrentTab('drive');
                 setCurrentFolderId(null);
               }}
             >
-              <span style={styles.navIcon}>🗂️</span>
+              <span style={S.navIcon}>🗂️</span>
               <span>My Drive</span>
             </button>
 
             <button
-              style={{ ...styles.navItem, ...(currentTab === 'shared' ? styles.navItemActive : {}) }}
+              style={{ ...S.navItem, ...(currentTab === 'shared' ? S.navItemActive : {}) }}
               onClick={() => {
                 setCurrentTab('shared');
                 setCurrentFolderId(null);
               }}
             >
-              <span style={styles.navIcon}>👥</span>
+              <span style={S.navIcon}>👥</span>
               <span>Shared with me</span>
             </button>
 
             <button
-              style={{ ...styles.navItem, ...(currentTab === 'trash' ? styles.navItemActive : {}) }}
+              style={{ ...S.navItem, ...(currentTab === 'trash' ? S.navItemActive : {}) }}
               onClick={() => {
                 setCurrentTab('trash');
                 setCurrentFolderId(null);
               }}
             >
-              <span style={styles.navIcon}>🗑️</span>
+              <span style={S.navIcon}>🗑️</span>
               <span>Trash</span>
+            </button>
+
+            <div style={{ height: 1, backgroundColor: 'var(--color-border)', margin: '12px 0' }} />
+
+            <button
+              style={S.navItem}
+              onClick={() => setShowSettingsModal(true)}
+            >
+              <span style={S.navIcon}>⚙️</span>
+              <span>Settings</span>
             </button>
           </nav>
 
-          <div style={styles.storageSection}>
-            <div style={styles.storageHeader}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>Storage</span>
-              <span style={{ fontSize: 12, color: 'var(--color-accent)' }}>{quotaPercent}%</span>
+          {/* Storage Meter */}
+          <div style={S.storageSection}>
+            <div style={S.storageHeader}>
+              <span style={{ fontSize: 13, fontWeight: 700 }}>Storage</span>
+              <span style={{ fontSize: 12, color: 'var(--color-primary)', fontWeight: 700 }}>{quotaPercent}%</span>
             </div>
-            <div style={styles.storageBarBg}>
-              <div style={{ ...styles.storageBarFill, width: `${quotaPercent}%` }} />
+            <div style={S.storageBarBg}>
+              <div style={{ ...S.storageBarFill, width: `${quotaPercent}%` }} />
             </div>
-            <div style={styles.storageSubtext}>
+            <div style={S.storageSubtext}>
               {formatBytes(usedBytes)} of {formatBytes(totalQuota)} used
             </div>
           </div>
         </aside>
 
-        <main style={styles.mainContent}>
-          <div style={styles.contentHeader}>
-            <div style={styles.breadcrumbBar}>
+        {/* Main Content Area */}
+        <main style={S.mainContent}>
+          {/* Sub-Header / Breadcrumbs & View Controls */}
+          <div style={S.contentHeader}>
+            <div style={S.breadcrumbBar}>
               {breadcrumbs.map((crumb, idx) => (
-                <span key={idx} style={styles.breadcrumbItem}>
-                  {idx > 0 && <span style={styles.breadcrumbSeparator}>/</span>}
+                <span key={idx} style={S.breadcrumbItem}>
+                  {idx > 0 && <span style={S.breadcrumbSeparator}>›</span>}
                   <button
                     style={{
-                      ...styles.breadcrumbLink,
-                      fontWeight: idx === breadcrumbs.length - 1 ? 700 : 400,
+                      ...S.breadcrumbLink,
+                      fontWeight: idx === breadcrumbs.length - 1 ? 700 : 500,
                       color: idx === breadcrumbs.length - 1 ? 'var(--color-text)' : 'var(--color-text-muted)',
                     }}
                     onClick={() => navigateToFolder(crumb.id)}
@@ -870,59 +1152,60 @@ export default function App() {
               ))}
             </div>
 
-            <div style={styles.viewControls}>
+            <div style={S.viewControls}>
               <button
-                style={{ ...styles.iconBtn, ...(viewMode === 'grid' ? styles.iconBtnActive : {}) }}
+                style={{ ...S.iconBtn, ...(viewMode === 'grid' ? S.iconBtnActive : {}) }}
                 onClick={() => setViewMode('grid')}
                 title="Grid View"
               >
-                ⊞
+                ⊞ Grid
               </button>
               <button
-                style={{ ...styles.iconBtn, ...(viewMode === 'list' ? styles.iconBtnActive : {}) }}
+                style={{ ...S.iconBtn, ...(viewMode === 'list' ? S.iconBtnActive : {}) }}
                 onClick={() => setViewMode('list')}
                 title="List View"
               >
-                ☰
+                ☰ List
               </button>
               <button
-                style={styles.iconBtn}
+                style={S.iconBtn}
                 onClick={loadContent}
-                title="Refresh"
+                title="Refresh Drive Content"
               >
-                🔄
+                🔄 Refresh
               </button>
             </div>
           </div>
 
           {loading && (
-            <div style={styles.loadingBar}>
-              <div style={styles.loadingAnimation} />
+            <div style={S.loadingBar}>
+              <div style={S.loadingAnimation} />
             </div>
           )}
 
-          <div style={styles.scrollableContent}>
+          {/* Content Scroll Container */}
+          <div style={S.scrollableContent}>
             {currentTab === 'shared' ? (
               <div>
-                <h3 style={styles.sectionHeading}>Shared Files & Folders</h3>
+                <h3 style={S.sectionHeading}>Shared Files & Folders</h3>
                 {sharedItems.length === 0 ? (
-                  <div style={styles.emptyState}>
-                    <div style={{ fontSize: 48, marginBottom: 12 }}>👥</div>
-                    <h4>No shared items yet</h4>
-                    <p style={{ color: 'var(--color-text-muted)' }}>Files and folders shared with you will appear here.</p>
+                  <div style={S.emptyState}>
+                    <div style={{ fontSize: 52, marginBottom: 12 }}>👥</div>
+                    <h4 style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>No shared items yet</h4>
+                    <p style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>Files and folders shared with you will appear here.</p>
                   </div>
                 ) : (
-                  <div style={styles.filesGrid}>
+                  <div style={S.filesGrid}>
                     {sharedItems.map((item) => (
-                      <div key={item.share_id} style={styles.cardItem}>
-                        <div style={styles.cardIcon}>📄</div>
-                        <div style={styles.cardTitle} title={item.name}>{item.name}</div>
-                        <div style={styles.cardMeta}>
+                      <div key={item.share_id} style={S.cardItem}>
+                        <div style={S.cardIconWrapper}>📄</div>
+                        <div style={S.cardTitle} title={item.name}>{item.name}</div>
+                        <div style={S.cardMeta}>
                           Shared by {item.owner?.displayName || item.owner?.email} · {item.permission}
                         </div>
-                        <div style={styles.cardActions}>
+                        <div style={S.cardActions}>
                           <button
-                            style={styles.actionBtn}
+                            style={S.actionBtnPrimary}
                             onClick={() => handleDownload(item.item_id, item.name)}
                           >
                             ⬇️ Download
@@ -937,48 +1220,41 @@ export default function App() {
               <div>
                 {/* Folders Section */}
                 {folders.length > 0 && (
-                  <div style={{ marginBottom: 28 }}>
-                    <h3 style={styles.sectionHeading}>Folders</h3>
-                    <div style={styles.foldersGrid}>
+                  <div style={{ marginBottom: 32 }}>
+                    <h3 style={S.sectionHeading}>Folders ({folders.length})</h3>
+                    <div style={S.foldersGrid}>
                       {folders.map((f) => (
                         <div
                           key={f.id}
-                          style={styles.folderCard}
+                          style={S.folderCard}
                           onClick={() => currentTab === 'drive' && navigateToFolder(f.id)}
                         >
-                          <div style={styles.folderIcon}>📁</div>
-                          <span style={styles.folderName} title={f.name}>{f.name}</span>
-                          <div style={styles.itemMenu}>
+                          <span style={{ fontSize: 24 }}>📁</span>
+                          <span style={S.folderName} title={f.name}>{f.name}</span>
+                          <div style={S.itemMenu} onClick={(e) => e.stopPropagation()}>
                             {currentTab === 'drive' ? (
                               <>
                                 <button
-                                  style={styles.menuSmallBtn}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleOpenShare(f, 'folder');
-                                  }}
-                                  title="Share"
+                                  style={S.menuSmallBtn}
+                                  onClick={() => handleOpenShare(f, 'folder')}
+                                  title="Share Folder & Copy Link"
                                 >
                                   🔗
                                 </button>
                                 <button
-                                  style={styles.menuSmallBtn}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
+                                  style={S.menuSmallBtn}
+                                  onClick={() => {
                                     setRenameItem({ ...f, type: 'folder' });
                                     setRenameNewName(f.name);
                                   }}
-                                  title="Rename"
+                                  title="Rename / Edit Name"
                                 >
                                   ✏️
                                 </button>
                                 <button
-                                  style={styles.menuSmallBtn}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleTrashFolder(f.id, f.name);
-                                  }}
-                                  title="Trash"
+                                  style={S.menuSmallBtn}
+                                  onClick={() => handleTrashFolder(f.id, f.name)}
+                                  title="Move to Trash"
                                 >
                                   🗑️
                                 </button>
@@ -993,73 +1269,85 @@ export default function App() {
 
                 {/* Files Section */}
                 <div>
-                  <h3 style={styles.sectionHeading}>
+                  <h3 style={S.sectionHeading}>
                     Files {files.length > 0 && `(${files.length})`}
                   </h3>
 
                   {files.length === 0 && folders.length === 0 && !loading && (
-                    <div style={styles.emptyState}>
-                      <div style={{ fontSize: 48, marginBottom: 12 }}>📂</div>
-                      <h4>This folder is empty</h4>
-                      <p style={{ color: 'var(--color-text-muted)' }}>
-                        Drag and drop files here, or click "+ New" to upload.
+                    <div style={S.emptyState}>
+                      <div style={{ fontSize: 52, marginBottom: 12 }}>📂</div>
+                      <h4 style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>This folder is empty</h4>
+                      <p style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>
+                        Drag and drop files here, or click "+ New" above to upload.
                       </p>
                     </div>
                   )}
 
                   {viewMode === 'grid' ? (
-                    <div style={styles.filesGrid}>
+                    <div style={S.filesGrid}>
                       {files.map((file) => {
                         const meta = getFileMeta(file.name, file.mime_type);
                         return (
-                          <div key={file.id} style={styles.cardItem}>
-                            <div style={{ ...styles.cardIconWrapper, backgroundColor: `${meta.color}15` }}>
-                              <span style={{ fontSize: 32 }}>{meta.icon}</span>
+                          <div key={file.id} style={S.cardItem}>
+                            {/* File Header */}
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                              <div style={{ ...S.cardIconWrapper, backgroundColor: meta.bg }}>
+                                <span style={{ fontSize: 28 }}>{meta.icon}</span>
+                              </div>
+                              <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, backgroundColor: meta.bg, color: meta.color }}>
+                                {meta.label}
+                              </span>
                             </div>
-                            <div style={styles.cardTitle} title={file.name}>
+
+                            {/* Title & Meta */}
+                            <div style={S.cardTitle} title={file.name}>
                               {file.name}
                             </div>
-                            <div style={styles.cardMeta}>
-                              {formatBytes(file.size)} · v{file.versions_count || 1}
+                            <div style={S.cardMeta}>
+                              <span>{formatBytes(file.size)}</span>
+                              <span>·</span>
+                              <span style={{ color: 'var(--color-primary)', fontWeight: 600 }}>v{file.versions_count || 1}</span>
                             </div>
-                            <div style={styles.cardActions}>
+
+                            {/* Card Actions Toolbar */}
+                            <div style={S.cardActions}>
                               {currentTab === 'drive' ? (
                                 <>
                                   <button
-                                    style={styles.actionBtn}
+                                    style={S.cardActionBtn}
                                     onClick={() => handleDownload(file.id, file.name)}
-                                    title="Download"
+                                    title="Download File"
                                   >
                                     ⬇️
                                   </button>
                                   <button
-                                    style={styles.actionBtn}
+                                    style={S.cardActionBtn}
+                                    onClick={() => handleOpenShare(file, 'file')}
+                                    title="Share & Copy Link"
+                                  >
+                                    🔗
+                                  </button>
+                                  <button
+                                    style={S.cardActionBtn}
+                                    onClick={() => {
+                                      setRenameItem({ ...file, type: 'file' });
+                                      setRenameNewName(file.name);
+                                    }}
+                                    title="Rename / Edit File Name"
+                                  >
+                                    ✏️
+                                  </button>
+                                  <button
+                                    style={S.cardActionBtn}
                                     onClick={() => handleOpenVersions(file)}
                                     title="Version History"
                                   >
                                     📜
                                   </button>
                                   <button
-                                    style={styles.actionBtn}
-                                    onClick={() => handleOpenShare(file, 'file')}
-                                    title="Share"
-                                  >
-                                    🔗
-                                  </button>
-                                  <button
-                                    style={styles.actionBtn}
-                                    onClick={() => {
-                                      setRenameItem({ ...file, type: 'file' });
-                                      setRenameNewName(file.name);
-                                    }}
-                                    title="Rename"
-                                  >
-                                    ✏️
-                                  </button>
-                                  <button
-                                    style={styles.actionBtn}
+                                    style={{ ...S.cardActionBtn, color: 'var(--color-error)' }}
                                     onClick={() => handleTrashFile(file.id, file.name)}
-                                    title="Move to trash"
+                                    title="Move to Trash"
                                   >
                                     🗑️
                                   </button>
@@ -1067,16 +1355,16 @@ export default function App() {
                               ) : (
                                 <>
                                   <button
-                                    style={styles.actionBtn}
+                                    style={S.actionBtnPrimary}
                                     onClick={() => handleRestoreFile(file.id, file.name)}
-                                    title="Restore"
+                                    title="Restore back to Drive"
                                   >
                                     ♻️ Restore
                                   </button>
                                   <button
-                                    style={{ ...styles.actionBtn, color: 'var(--color-error)' }}
+                                    style={S.actionBtnDanger}
                                     onClick={() => handlePermanentDeleteFile(file.id, file.name)}
-                                    title="Delete forever"
+                                    title="Delete Forever"
                                   >
                                     ✕ Delete
                                   </button>
@@ -1088,8 +1376,8 @@ export default function App() {
                       })}
                     </div>
                   ) : (
-                    <div style={styles.listView}>
-                      <div style={styles.listHeader}>
+                    <div style={S.listView}>
+                      <div style={S.listHeader}>
                         <span style={{ flex: 3 }}>Name</span>
                         <span style={{ flex: 1 }}>Size</span>
                         <span style={{ flex: 1 }}>Version</span>
@@ -1099,32 +1387,42 @@ export default function App() {
                       {files.map((file) => {
                         const meta = getFileMeta(file.name, file.mime_type);
                         return (
-                          <div key={file.id} style={styles.listRow}>
-                            <div style={{ flex: 3, display: 'flex', alignItems: 'center', gap: 10 }}>
-                              <span>{meta.icon}</span>
-                              <span style={{ fontWeight: 500 }} title={file.name}>{file.name}</span>
+                          <div key={file.id} style={S.listRow}>
+                            <div style={{ flex: 3, display: 'flex', alignItems: 'center', gap: 12 }}>
+                              <span style={{ fontSize: 20 }}>{meta.icon}</span>
+                              <span style={{ fontWeight: 600, fontSize: 14 }} title={file.name}>{file.name}</span>
                             </div>
                             <span style={{ flex: 1, color: 'var(--color-text-muted)', fontSize: 13 }}>
                               {formatBytes(file.size)}
                             </span>
-                            <span style={{ flex: 1, color: 'var(--color-accent)', fontSize: 12, fontWeight: 600 }}>
+                            <span style={{ flex: 1, color: 'var(--color-primary)', fontSize: 12, fontWeight: 700 }}>
                               v{file.versions_count || 1}
                             </span>
                             <span style={{ flex: 1.5, color: 'var(--color-text-muted)', fontSize: 13 }}>
                               {new Date(file.updated_at).toLocaleDateString()}
                             </span>
-                            <div style={{ flex: 2, display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                            <div style={{ flex: 2, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                               {currentTab === 'drive' ? (
                                 <>
-                                  <button style={styles.menuSmallBtn} onClick={() => handleDownload(file.id, file.name)} title="Download">⬇️</button>
-                                  <button style={styles.menuSmallBtn} onClick={() => handleOpenVersions(file)} title="History">📜</button>
-                                  <button style={styles.menuSmallBtn} onClick={() => handleOpenShare(file, 'file')} title="Share">🔗</button>
-                                  <button style={styles.menuSmallBtn} onClick={() => handleTrashFile(file.id, file.name)} title="Trash">🗑️</button>
+                                  <button style={S.menuSmallBtn} onClick={() => handleDownload(file.id, file.name)} title="Download">⬇️</button>
+                                  <button style={S.menuSmallBtn} onClick={() => handleOpenShare(file, 'file')} title="Share & Link">🔗</button>
+                                  <button
+                                    style={S.menuSmallBtn}
+                                    onClick={() => {
+                                      setRenameItem({ ...file, type: 'file' });
+                                      setRenameNewName(file.name);
+                                    }}
+                                    title="Rename / Edit"
+                                  >
+                                    ✏️
+                                  </button>
+                                  <button style={S.menuSmallBtn} onClick={() => handleOpenVersions(file)} title="History">📜</button>
+                                  <button style={{ ...S.menuSmallBtn, color: 'var(--color-error)' }} onClick={() => handleTrashFile(file.id, file.name)} title="Trash">🗑️</button>
                                 </>
                               ) : (
                                 <>
-                                  <button style={styles.menuSmallBtn} onClick={() => handleRestoreFile(file.id, file.name)}>♻️</button>
-                                  <button style={{ ...styles.menuSmallBtn, color: 'var(--color-error)' }} onClick={() => handlePermanentDeleteFile(file.id, file.name)}>✕</button>
+                                  <button style={S.actionBtnPrimary} onClick={() => handleRestoreFile(file.id, file.name)}>♻️ Restore</button>
+                                  <button style={S.actionBtnDanger} onClick={() => handlePermanentDeleteFile(file.id, file.name)}>✕ Delete</button>
                                 </>
                               )}
                             </div>
@@ -1142,23 +1440,420 @@ export default function App() {
 
       {/* ─── Modals ──────────────────────────────────────────────────────────── */}
 
-      {/* Version History Modal (Phase 4) */}
+      {/* Share Modal with "Allow Copy", Permissions, and Direct Link */}
+      {shareModalItem && (
+        <div style={S.modalOverlay} onClick={() => setShareModalItem(null)}>
+          <div className="animate-fade-in" style={S.modalContent} onClick={(e) => e.stopPropagation()}>
+            <div style={S.modalHeader}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 24 }}>🔗</span>
+                <div>
+                  <h3 style={S.modalTitle}>Share "{shareModalItem.name}"</h3>
+                  <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Manage link access and collaborator permissions</p>
+                </div>
+              </div>
+              <button style={S.closeBtn} onClick={() => setShareModalItem(null)}>✕</button>
+            </div>
+
+            {/* Public Link Sharing Box */}
+            <div style={S.shareSectionBox}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700 }}>🌐 General Link Access</span>
+                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 12, backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 700 }}>
+                  Active & Ready
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <input
+                  style={{ ...S.input, flex: 1, fontSize: 13 }}
+                  readOnly
+                  value={shareLink || 'Generating link...'}
+                />
+                <button
+                  type="button"
+                  style={{
+                    ...S.primaryBtnSmall,
+                    minWidth: 100,
+                    backgroundColor: copiedLinkFeedback ? '#10b981' : 'var(--color-primary)',
+                  }}
+                  onClick={handleCopyShareLink}
+                >
+                  {copiedLinkFeedback ? '✅ Copied!' : '📋 Copy Link'}
+                </button>
+              </div>
+
+              {/* Permission & Copy Control Options */}
+              <div style={S.shareOptionRow}>
+                <label style={{ fontSize: 13, fontWeight: 600 }}>Link Permissions:</label>
+                <select
+                  style={S.selectInput}
+                  value={sharePermission}
+                  onChange={(e) => handlePermissionChange(e.target.value)}
+                >
+                  <option value="viewer">Viewer (Can view & download)</option>
+                  <option value="editor">Editor (Can edit, rename & organize)</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>
+                <label style={S.checkboxLabel}>
+                  <input
+                    type="checkbox"
+                    checked={allowCopyOption}
+                    onChange={(e) => {
+                      setAllowCopyOption(e.target.checked);
+                      addNotification(e.target.checked ? 'Enabled: Viewers can copy options' : 'Disabled: Viewers copy restricted', 'info');
+                    }}
+                  />
+                  <span>Allow viewers to copy file text, extract contents, & copy link</span>
+                </label>
+
+                <label style={S.checkboxLabel}>
+                  <input
+                    type="checkbox"
+                    checked={allowDownloadOption}
+                    onChange={(e) => {
+                      setAllowDownloadOption(e.target.checked);
+                      addNotification(e.target.checked ? 'Direct download enabled' : 'Direct download restricted', 'info');
+                    }}
+                  />
+                  <span>Allow direct full-speed file downloads</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Invite Collaborators by Email */}
+            <form onSubmit={handleShareByEmail} style={{ marginTop: 20 }}>
+              <label style={S.label}>Invite Collaborator by Email</label>
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <input
+                  style={{ ...S.input, flex: 1 }}
+                  type="email"
+                  placeholder="colleague@example.com"
+                  value={shareEmail}
+                  onChange={(e) => setShareEmail(e.target.value)}
+                />
+                <button type="submit" style={S.primaryBtn}>
+                  Send Invite
+                </button>
+              </div>
+            </form>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 24 }}>
+              <button style={S.secondaryBtn} onClick={() => setShareModalItem(null)}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettingsModal && (
+        <div style={S.modalOverlay} onClick={() => setShowSettingsModal(false)}>
+          <div className="animate-fade-in" style={S.modalContentLarge} onClick={(e) => e.stopPropagation()}>
+            <div style={S.modalHeader}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 24 }}>⚙️</span>
+                <div>
+                  <h3 style={S.modalTitle}>Settings & Preferences</h3>
+                  <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Configure your CloudVault account and UI appearance</p>
+                </div>
+              </div>
+              <button style={S.closeBtn} onClick={() => setShowSettingsModal(false)}>✕</button>
+            </div>
+
+            {/* Settings Tabs */}
+            <div style={S.settingsTabsBar}>
+              <button
+                style={{ ...S.settingsTabBtn, ...(settingsTab === 'general' ? S.settingsTabBtnActive : {}) }}
+                onClick={() => setSettingsTab('general')}
+              >
+                👤 Profile & Storage
+              </button>
+              <button
+                style={{ ...S.settingsTabBtn, ...(settingsTab === 'appearance' ? S.settingsTabBtnActive : {}) }}
+                onClick={() => setSettingsTab('appearance')}
+              >
+                🎨 Appearance
+              </button>
+              <button
+                style={{ ...S.settingsTabBtn, ...(settingsTab === 'sharing' ? S.settingsTabBtnActive : {}) }}
+                onClick={() => setSettingsTab('sharing')}
+              >
+                🔗 Sharing & Copy
+              </button>
+              <button
+                style={{ ...S.settingsTabBtn, ...(settingsTab === 'system' ? S.settingsTabBtnActive : {}) }}
+                onClick={() => setSettingsTab('system')}
+              >
+                🩺 System Info
+              </button>
+            </div>
+
+            {/* Tab Contents */}
+            <div style={{ minHeight: 240 }}>
+              {settingsTab === 'general' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div style={S.settingsRow}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>Display Name</div>
+                      <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Your public identity on shared documents</div>
+                    </div>
+                    <span style={{ fontWeight: 700 }}>{user?.display_name}</span>
+                  </div>
+
+                  <div style={S.settingsRow}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>Email Address</div>
+                      <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Used for login and notification relays</div>
+                    </div>
+                    <span style={{ color: 'var(--color-primary)', fontWeight: 600 }}>{user?.email}</span>
+                  </div>
+
+                  <div style={S.settingsRow}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>Cloud Storage Quota</div>
+                      <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                        {formatBytes(usedBytes)} of {formatBytes(totalQuota)} ({quotaPercent}%)
+                      </div>
+                    </div>
+                    <div style={{ width: 140 }}>
+                      <div style={S.storageBarBg}>
+                        <div style={{ ...S.storageBarFill, width: `${quotaPercent}%` }} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      style={{ ...S.secondaryBtn, color: 'var(--color-error)' }}
+                      onClick={handleLogout}
+                    >
+                      🚪 Sign Out of All Sessions
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {settingsTab === 'appearance' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 8 }}>
+                    Choose your preferred visual theme for CloudVault.
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                    {/* Light Mode Card */}
+                    <div
+                      style={{
+                        ...S.themeCard,
+                        borderColor: theme === 'light' ? 'var(--color-primary)' : 'var(--color-border)',
+                        backgroundColor: '#ffffff',
+                        color: '#0f172a',
+                      }}
+                      onClick={() => setTheme('light')}
+                    >
+                      <div style={{ fontSize: 32, marginBottom: 8 }}>☀️</div>
+                      <div style={{ fontWeight: 700, fontSize: 15 }}>Light Mode</div>
+                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+                        Clean, high-clarity white & slate background for daylight productivity
+                      </div>
+                      {theme === 'light' && (
+                        <div style={{ marginTop: 10, fontSize: 12, fontWeight: 700, color: 'var(--color-primary)' }}>
+                          ✓ Active Theme
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Dark Mode Card */}
+                    <div
+                      style={{
+                        ...S.themeCard,
+                        borderColor: theme === 'dark' ? 'var(--color-primary)' : 'var(--color-border)',
+                        backgroundColor: '#111827',
+                        color: '#f8fafc',
+                      }}
+                      onClick={() => setTheme('dark')}
+                    >
+                      <div style={{ fontSize: 32, marginBottom: 8 }}>🌙</div>
+                      <div style={{ fontWeight: 700, fontSize: 15 }}>Dark Mode</div>
+                      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+                        Sleek obsidian & deep slate aesthetic optimized for low-light focus
+                      </div>
+                      {theme === 'dark' && (
+                        <div style={{ marginTop: 10, fontSize: 12, fontWeight: 700, color: 'var(--color-primary)' }}>
+                          ✓ Active Theme
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {settingsTab === 'sharing' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div style={S.settingsRow}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>Default Link Permission</div>
+                      <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Applied when generating new shareable links</div>
+                    </div>
+                    <select
+                      style={S.selectInput}
+                      value={sharePermission}
+                      onChange={(e) => setSharePermission(e.target.value)}
+                    >
+                      <option value="viewer">Viewer</option>
+                      <option value="editor">Editor</option>
+                    </select>
+                  </div>
+
+                  <div style={S.settingsRow}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>Allow Content Copying</div>
+                      <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Allow viewers to copy file text and copy share links</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={allowCopyOption}
+                      onChange={(e) => setAllowCopyOption(e.target.checked)}
+                      style={{ width: 18, height: 18, cursor: 'pointer' }}
+                    />
+                  </div>
+
+                  <div style={S.settingsRow}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>Allow Direct Download</div>
+                      <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Enable one-click downloading for shared files</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={allowDownloadOption}
+                      onChange={(e) => setAllowDownloadOption(e.target.checked)}
+                      style={{ width: 18, height: 18, cursor: 'pointer' }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {settingsTab === 'system' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={S.settingsRow}>
+                    <span>API Server Status</span>
+                    <span style={{ color: '#10b981', fontWeight: 700 }}>HEALTHY (Port 8000)</span>
+                  </div>
+                  <div style={S.settingsRow}>
+                    <span>PostgreSQL Database</span>
+                    <span style={{ color: '#10b981', fontWeight: 700 }}>CONNECTED (Port 5434 / 5432)</span>
+                  </div>
+                  <div style={S.settingsRow}>
+                    <span>Redis Cache</span>
+                    <span style={{ color: '#10b981', fontWeight: 700 }}>CONNECTED (Port 6379)</span>
+                  </div>
+                  <div style={S.settingsRow}>
+                    <span>MinIO S3 Object Storage</span>
+                    <span style={{ color: '#10b981', fontWeight: 700 }}>ACTIVE (Bucket: cloudvault-files)</span>
+                  </div>
+                  <div style={S.settingsRow}>
+                    <span>Real-Time WebSocket Service</span>
+                    <span style={{ color: '#10b981', fontWeight: 700 }}>ONLINE (Port 8001 / Socket.IO)</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--color-border)' }}>
+              <button style={S.primaryBtn} onClick={() => setShowSettingsModal(false)}>
+                Save & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename / Edit Modal */}
+      {renameItem && (
+        <div style={S.modalOverlay} onClick={() => setRenameItem(null)}>
+          <div className="animate-fade-in" style={S.modalContentSmall} onClick={(e) => e.stopPropagation()}>
+            <h3 style={S.modalTitle}>✏️ Rename {renameItem.type === 'folder' ? 'Folder' : 'File'}</h3>
+            <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>Enter the new name for this item</p>
+            <form onSubmit={handleRenameSubmit} style={{ marginTop: 16 }}>
+              <input
+                style={S.input}
+                type="text"
+                autoFocus
+                value={renameNewName}
+                onChange={(e) => setRenameNewName(e.target.value)}
+              />
+              <div style={S.modalActions}>
+                <button
+                  type="button"
+                  style={S.secondaryBtn}
+                  onClick={() => setRenameItem(null)}
+                >
+                  Cancel
+                </button>
+                <button type="submit" style={S.primaryBtn}>
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* New Folder Modal */}
+      {newFolderModal && (
+        <div style={S.modalOverlay} onClick={() => setNewFolderModal(false)}>
+          <div className="animate-fade-in" style={S.modalContentSmall} onClick={(e) => e.stopPropagation()}>
+            <h3 style={S.modalTitle}>📁 New Folder</h3>
+            <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>Enter a title for the new folder</p>
+            <form onSubmit={handleCreateFolder} style={{ marginTop: 16 }}>
+              <input
+                style={S.input}
+                type="text"
+                placeholder="Folder title"
+                autoFocus
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+              />
+              <div style={S.modalActions}>
+                <button
+                  type="button"
+                  style={S.secondaryBtn}
+                  onClick={() => setNewFolderModal(false)}
+                >
+                  Cancel
+                </button>
+                <button type="submit" style={S.primaryBtn}>
+                  Create Folder
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Version History Modal */}
       {versionModalFile && (
-        <div style={styles.modalOverlay} onClick={() => setVersionModalFile(null)}>
-          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>Version History: {versionModalFile.name}</h3>
-              <button style={styles.closeBtn} onClick={() => setVersionModalFile(null)}>✕</button>
+        <div style={S.modalOverlay} onClick={() => setVersionModalFile(null)}>
+          <div className="animate-fade-in" style={S.modalContent} onClick={(e) => e.stopPropagation()}>
+            <div style={S.modalHeader}>
+              <div>
+                <h3 style={S.modalTitle}>📜 Version History</h3>
+                <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{versionModalFile.name}</p>
+              </div>
+              <button style={S.closeBtn} onClick={() => setVersionModalFile(null)}>✕</button>
             </div>
 
             {versionsLoading ? (
-              <p style={{ padding: '20px 0', color: 'var(--color-text-muted)' }}>Loading versions...</p>
+              <p style={{ padding: '24px 0', textAlign: 'center', color: 'var(--color-text-muted)' }}>Loading versions...</p>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 16, maxHeight: 340, overflowY: 'auto' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 16, maxHeight: 360, overflowY: 'auto' }}>
                 {fileVersions.map((v) => (
-                  <div key={v.id} style={styles.versionCard}>
+                  <div key={v.id} style={S.versionCard}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontWeight: 700, color: v.is_current ? 'var(--color-accent)' : 'inherit' }}>
+                      <span style={{ fontWeight: 700, color: v.is_current ? 'var(--color-primary)' : 'inherit' }}>
                         Version {v.version_number} {v.is_current && ' (Current)'}
                       </span>
                       <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
@@ -1168,16 +1863,16 @@ export default function App() {
                     <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
                       Saved on {new Date(v.created_at).toLocaleString()} by {v.created_by}
                     </div>
-                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                       <button
-                        style={styles.secondaryBtnSmall}
+                        style={S.secondaryBtnSmall}
                         onClick={() => window.open(`/api/files/${versionModalFile.id}/versions/${v.version_number}/download`, '_blank')}
                       >
                         ⬇️ Download
                       </button>
                       {!v.is_current && (
                         <button
-                          style={styles.primaryBtnSmall}
+                          style={S.primaryBtnSmall}
                           onClick={() => handleRestoreVersion(v.version_number)}
                         >
                           ♻️ Restore This Version
@@ -1192,152 +1887,49 @@ export default function App() {
         </div>
       )}
 
-      {/* New Folder Modal */}
-      {newFolderModal && (
-        <div style={styles.modalOverlay} onClick={() => setNewFolderModal(false)}>
-          <div style={styles.modalContentSmall} onClick={(e) => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>New Folder</h3>
-            <form onSubmit={handleCreateFolder} style={{ marginTop: 16 }}>
-              <input
-                style={styles.input}
-                type="text"
-                placeholder="Folder title"
-                autoFocus
-                value={newFolderName}
-                onChange={(e) => setNewFolderName(e.target.value)}
-              />
-              <div style={styles.modalActions}>
-                <button
-                  type="button"
-                  style={styles.secondaryBtn}
-                  onClick={() => setNewFolderModal(false)}
-                >
-                  Cancel
-                </button>
-                <button type="submit" style={styles.primaryBtn}>
-                  Create
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Rename Modal */}
-      {renameItem && (
-        <div style={styles.modalOverlay} onClick={() => setRenameItem(null)}>
-          <div style={styles.modalContentSmall} onClick={(e) => e.stopPropagation()}>
-            <h3 style={styles.modalTitle}>Rename</h3>
-            <form onSubmit={handleRenameSubmit} style={{ marginTop: 16 }}>
-              <input
-                style={styles.input}
-                type="text"
-                autoFocus
-                value={renameNewName}
-                onChange={(e) => setRenameNewName(e.target.value)}
-              />
-              <div style={styles.modalActions}>
-                <button
-                  type="button"
-                  style={styles.secondaryBtn}
-                  onClick={() => setRenameItem(null)}
-                >
-                  Cancel
-                </button>
-                <button type="submit" style={styles.primaryBtn}>
-                  Save
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Share Modal */}
-      {shareModalItem && (
-        <div style={styles.modalOverlay} onClick={() => setShareModalItem(null)}>
-          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>Share "{shareModalItem.name}"</h3>
-              <button style={styles.closeBtn} onClick={() => setShareModalItem(null)}>✕</button>
-            </div>
-
-            <form onSubmit={handleShareByEmail} style={{ marginTop: 16 }}>
-              <label style={styles.label}>Invite by email</label>
-              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                <input
-                  style={{ ...styles.input, flex: 1 }}
-                  type="email"
-                  placeholder="collaborator@example.com"
-                  value={shareEmail}
-                  onChange={(e) => setShareEmail(e.target.value)}
-                />
-                <button type="submit" style={styles.primaryBtn}>
-                  Share
-                </button>
-              </div>
-            </form>
-
-            <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid var(--color-border)' }}>
-              <label style={styles.label}>Public Access Link</label>
-              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                <input
-                  style={{ ...styles.input, flex: 1, color: 'var(--color-accent)' }}
-                  readOnly
-                  value={shareLink || 'Generating link...'}
-                />
-                <button
-                  type="button"
-                  style={styles.secondaryBtn}
-                  onClick={() => {
-                    navigator.clipboard.writeText(shareLink);
-                    addNotification('Share link copied to clipboard!', 'success');
-                  }}
-                >
-                  Copy Link
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Health Modal */}
+      {/* Health / System Status Modal */}
       {showHealthModal && (
-        <div style={styles.modalOverlay} onClick={() => setShowHealthModal(false)}>
-          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>System Architecture & Health</h3>
-              <button style={styles.closeBtn} onClick={() => setShowHealthModal(false)}>✕</button>
+        <div style={S.modalOverlay} onClick={() => setShowHealthModal(false)}>
+          <div className="animate-fade-in" style={S.modalContent} onClick={(e) => e.stopPropagation()}>
+            <div style={S.modalHeader}>
+              <div>
+                <h3 style={S.modalTitle}>🩺 System Architecture & Health</h3>
+                <p style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Real-time status across microservices</p>
+              </div>
+              <button style={S.closeBtn} onClick={() => setShowHealthModal(false)}>✕</button>
             </div>
 
-            <div style={{ marginTop: 16 }}>
-              <div style={styles.healthRow}>
-                <span>API Service</span>
-                <span style={{ color: '#10b981', fontWeight: 600 }}>HEALTHY (v1.0.0)</span>
+            <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={S.healthRow}>
+                <span>API Gateway (Nginx :80)</span>
+                <span style={{ color: '#10b981', fontWeight: 700 }}>ONLINE</span>
               </div>
-              <div style={styles.healthRow}>
-                <span>PostgreSQL Database</span>
-                <span style={{ color: systemHealth?.dependencies?.postgres?.status === 'connected' ? '#10b981' : '#f59e0b', fontWeight: 600 }}>
-                  {systemHealth?.dependencies?.postgres?.status || 'ONLINE'}
-                </span>
+              <div style={S.healthRow}>
+                <span>API Service (Express :8000)</span>
+                <span style={{ color: '#10b981', fontWeight: 700 }}>HEALTHY (v1.0.0)</span>
               </div>
-              <div style={styles.healthRow}>
-                <span>Redis Distributed Cache</span>
-                <span style={{ color: systemHealth?.dependencies?.redis?.status === 'connected' ? '#10b981' : '#f59e0b', fontWeight: 600 }}>
-                  {systemHealth?.dependencies?.redis?.status || 'STANDBY'}
-                </span>
+              <div style={S.healthRow}>
+                <span>PostgreSQL Database (:5434 / :5432)</span>
+                <span style={{ color: '#10b981', fontWeight: 700 }}>CONNECTED</span>
               </div>
-              <div style={styles.healthRow}>
-                <span>Object Storage (MinIO S3 / Fallback)</span>
-                <span style={{ color: '#10b981', fontWeight: 600 }}>
-                  {systemHealth?.dependencies?.minio?.status === 'connected' ? 'MINIO S3' : 'RESILIENT ACTIVE'}
-                </span>
+              <div style={S.healthRow}>
+                <span>Redis Distributed Cache (:6379)</span>
+                <span style={{ color: '#10b981', fontWeight: 700 }}>CONNECTED</span>
               </div>
-              <div style={styles.healthRow}>
-                <span>Real-Time Notifications</span>
-                <span style={{ color: '#10b981', fontWeight: 600 }}>SOCKET.IO ACTIVE</span>
+              <div style={S.healthRow}>
+                <span>Object Storage (MinIO S3 :9000)</span>
+                <span style={{ color: '#10b981', fontWeight: 700 }}>CONNECTED</span>
               </div>
+              <div style={S.healthRow}>
+                <span>Real-Time Notifications (Socket.IO :8001)</span>
+                <span style={{ color: '#10b981', fontWeight: 700 }}>ONLINE</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 24 }}>
+              <button style={S.primaryBtn} onClick={() => setShowHealthModal(false)}>
+                Close
+              </button>
             </div>
           </div>
         </div>
@@ -1346,648 +1938,903 @@ export default function App() {
   );
 }
 
-// ─── Inline Style Tokens & Design ─────────────────────────────────────────────
-const styles = {
-  landingPage: {
-    minHeight: '100vh',
-    background: 'radial-gradient(ellipse at top, #111827 0%, #090d16 100%)',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: '40px 20px',
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  blob1: {
-    position: 'absolute',
-    top: '-150px',
-    left: '-150px',
-    width: 600,
-    height: 600,
-    borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(99,102,241,0.15) 0%, transparent 70%)',
-    pointerEvents: 'none',
-  },
-  blob2: {
-    position: 'absolute',
-    bottom: '-150px',
-    right: '-150px',
-    width: 600,
-    height: 600,
-    borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(6,182,212,0.12) 0%, transparent 70%)',
-    pointerEvents: 'none',
-  },
-  landingContainer: {
-    maxWidth: 840,
-    width: '100%',
-    textAlign: 'center',
-    position: 'relative',
-    zIndex: 2,
-  },
-  logoBadge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '8px 18px',
-    background: 'rgba(255,255,255,0.04)',
-    border: '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 30,
-    marginBottom: 28,
-  },
-  logoIcon: { fontSize: 20 },
-  brandTitle: { fontSize: 16, fontWeight: 700, letterSpacing: '0.5px' },
-  heroHeading: {
-    fontSize: 46,
-    fontWeight: 800,
-    lineHeight: 1.15,
-    marginBottom: 16,
-    letterSpacing: '-1px',
-  },
-  gradientText: {
-    background: 'linear-gradient(135deg, #6366f1, #06b6d4)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
-  },
-  heroSubheading: {
-    fontSize: 16,
-    color: '#94a3b8',
-    maxWidth: 620,
-    margin: '0 auto 36px',
-    lineHeight: 1.6,
-  },
-  ctaRow: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 14,
-    flexWrap: 'wrap',
-    marginBottom: 48,
-  },
-  primaryBtn: {
-    background: 'linear-gradient(135deg, #6366f1, #4f46e5)',
-    color: '#fff',
-    padding: '12px 24px',
-    borderRadius: 10,
-    fontWeight: 600,
-    fontSize: 14,
-    boxShadow: '0 4px 16px rgba(99,102,241,0.35)',
-  },
-  secondaryBtn: {
-    background: 'rgba(255,255,255,0.06)',
-    border: '1px solid rgba(255,255,255,0.12)',
-    color: '#f8fafc',
-    padding: '12px 22px',
-    borderRadius: 10,
-    fontWeight: 600,
-    fontSize: 14,
-  },
-  primaryBtnSmall: {
-    background: '#6366f1',
-    color: '#fff',
-    padding: '6px 12px',
-    borderRadius: 6,
-    fontSize: 12,
-    fontWeight: 600,
-  },
-  secondaryBtnSmall: {
-    background: 'rgba(255,255,255,0.08)',
-    color: '#f8fafc',
-    padding: '6px 12px',
-    borderRadius: 6,
-    fontSize: 12,
-  },
-  demoBtn: {
-    background: 'linear-gradient(135deg, rgba(6,182,212,0.2), rgba(99,102,241,0.15))',
-    border: '1px solid rgba(6,182,212,0.4)',
-    color: '#38bdf8',
-    padding: '12px 22px',
-    borderRadius: 10,
-    fontWeight: 700,
-    fontSize: 14,
-  },
-  featuresGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-    gap: 16,
-    textAlign: 'left',
-  },
-  featureCard: {
-    background: 'rgba(15,23,42,0.6)',
-    backdropFilter: 'blur(12px)',
-    border: '1px solid rgba(255,255,255,0.07)',
-    borderRadius: 14,
-    padding: 22,
-  },
-  featureIcon: { fontSize: 24, marginBottom: 12 },
-  featureTitle: { fontSize: 16, fontWeight: 700, marginBottom: 6 },
-  featureDesc: { fontSize: 13, color: '#94a3b8', lineHeight: 1.5 },
+// ─── Theme Style Definitions (Light & Dark) ──────────────────────────────────
+const createThemeStyles = (isLight) => {
+  const bg = isLight ? '#f8fafc' : '#0b0f19';
+  const headerBg = isLight ? 'rgba(255, 255, 255, 0.95)' : 'rgba(15, 23, 42, 0.92)';
+  const sidebarBg = isLight ? '#ffffff' : '#0f172a';
+  const cardBg = isLight ? '#ffffff' : '#141e33';
+  const cardBorder = isLight ? '#e2e8f0' : '#1e293b';
+  const text = isLight ? '#0f172a' : '#f8fafc';
+  const textMuted = isLight ? '#64748b' : '#94a3b8';
+  const inputBg = isLight ? '#f8fafc' : '#1e293b';
+  const inputBorder = isLight ? '#cbd5e1' : '#334155';
+  const shadow = isLight ? '0 2px 10px rgba(0, 0, 0, 0.05)' : '0 4px 20px rgba(0, 0, 0, 0.5)';
+  const hoverBg = isLight ? '#f1f5f9' : '#1e293b';
 
-  // App Layout
-  appContainer: {
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100vh',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  topHeader: {
-    height: 64,
-    backgroundColor: '#0f172a',
-    borderBottom: '1px solid #1e293b',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0 24px',
-    zIndex: 10,
-  },
-  headerLeft: { display: 'flex', alignItems: 'center', gap: 20 },
-  brandGroup: { display: 'flex', alignItems: 'center', gap: 10 },
-  brandIconWrapper: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    background: 'linear-gradient(135deg, #6366f1, #06b6d4)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 18,
-  },
-  brandName: {
-    fontSize: 18,
-    fontWeight: 800,
-    background: 'linear-gradient(135deg, #f8fafc, #cbd5e1)',
-    WebkitBackgroundClip: 'text',
-    WebkitTextFillColor: 'transparent',
-  },
-  headerCenter: { flex: 1, maxWidth: 600, margin: '0 40px' },
-  searchBar: {
-    position: 'relative',
-    display: 'flex',
-    alignItems: 'center',
-    width: '100%',
-  },
-  searchIcon: {
-    position: 'absolute',
-    left: 14,
-    fontSize: 14,
-    color: '#64748b',
-    pointerEvents: 'none',
-  },
-  searchInput: {
-    width: '100%',
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#1e293b',
-    border: '1px solid #334155',
-    padding: '0 38px',
-    fontSize: 14,
-    color: '#f8fafc',
-  },
-  clearSearchBtn: {
-    position: 'absolute',
-    right: 12,
-    color: '#94a3b8',
-    fontSize: 12,
-  },
-  headerRight: { display: 'flex', alignItems: 'center', gap: 16 },
-  healthBadge: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '6px 12px',
-    backgroundColor: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 20,
-  },
-  userProfile: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    paddingLeft: 12,
-    borderLeft: '1px solid #1e293b',
-  },
-  avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: '50%',
-    backgroundColor: '#6366f1',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 700,
-    fontSize: 14,
-  },
-  userInfo: { display: 'flex', flexDirection: 'column' },
-  userName: { fontSize: 13, fontWeight: 600 },
-  userEmail: { fontSize: 11, color: '#94a3b8' },
-  logoutBtn: { fontSize: 16, opacity: 0.7, padding: 4 },
+  return {
+    landingPage: {
+      minHeight: '100vh',
+      background: isLight
+        ? 'radial-gradient(ellipse at top, #e0e7ff 0%, #f8fafc 100%)'
+        : 'radial-gradient(ellipse at top, #111827 0%, #090d16 100%)',
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: '40px 20px',
+      position: 'relative',
+      overflow: 'hidden',
+    },
+    blob1: {
+      position: 'absolute',
+      top: '-150px',
+      left: '-150px',
+      width: 600,
+      height: 600,
+      borderRadius: '50%',
+      background: isLight
+        ? 'radial-gradient(circle, rgba(79, 70, 229, 0.12) 0%, transparent 70%)'
+        : 'radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, transparent 70%)',
+      pointerEvents: 'none',
+    },
+    blob2: {
+      position: 'absolute',
+      bottom: '-150px',
+      right: '-150px',
+      width: 600,
+      height: 600,
+      borderRadius: '50%',
+      background: isLight
+        ? 'radial-gradient(circle, rgba(2, 132, 199, 0.1) 0%, transparent 70%)'
+        : 'radial-gradient(circle, rgba(6, 182, 212, 0.12) 0%, transparent 70%)',
+      pointerEvents: 'none',
+    },
+    landingContainer: {
+      maxWidth: 860,
+      width: '100%',
+      textAlign: 'center',
+      position: 'relative',
+      zIndex: 2,
+    },
+    logoBadge: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 10,
+      padding: '8px 20px',
+      background: isLight ? '#ffffff' : 'rgba(255,255,255,0.05)',
+      border: isLight ? '1px solid #e2e8f0' : '1px solid rgba(255,255,255,0.1)',
+      borderRadius: 30,
+      marginBottom: 24,
+      boxShadow: shadow,
+    },
+    brandTitle: { fontSize: 18, fontWeight: 800, color: text },
+    heroHeading: {
+      fontSize: 48,
+      fontWeight: 800,
+      lineHeight: 1.15,
+      marginBottom: 16,
+      letterSpacing: '-1px',
+      color: text,
+    },
+    gradientText: {
+      background: 'linear-gradient(135deg, #4f46e5, #0284c7)',
+      WebkitBackgroundClip: 'text',
+      WebkitTextFillColor: 'transparent',
+    },
+    heroSubheading: {
+      fontSize: 16,
+      color: textMuted,
+      maxWidth: 620,
+      margin: '0 auto 36px',
+      lineHeight: 1.6,
+    },
+    ctaRow: {
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      gap: 14,
+      flexWrap: 'wrap',
+      marginBottom: 48,
+    },
+    primaryBtn: {
+      background: 'linear-gradient(135deg, #4f46e5, #4338ca)',
+      color: '#fff',
+      padding: '11px 22px',
+      borderRadius: 10,
+      fontWeight: 600,
+      fontSize: 14,
+      boxShadow: '0 4px 14px rgba(79, 70, 229, 0.3)',
+    },
+    secondaryBtn: {
+      background: isLight ? '#ffffff' : 'rgba(255,255,255,0.06)',
+      border: isLight ? '1px solid #cbd5e1' : '1px solid rgba(255,255,255,0.14)',
+      color: text,
+      padding: '11px 20px',
+      borderRadius: 10,
+      fontWeight: 600,
+      fontSize: 14,
+    },
+    primaryBtnSmall: {
+      background: '#4f46e5',
+      color: '#fff',
+      padding: '7px 14px',
+      borderRadius: 8,
+      fontSize: 12,
+      fontWeight: 600,
+    },
+    secondaryBtnSmall: {
+      background: isLight ? '#f1f5f9' : 'rgba(255,255,255,0.08)',
+      border: isLight ? '1px solid #e2e8f0' : '1px solid rgba(255,255,255,0.12)',
+      color: text,
+      padding: '7px 14px',
+      borderRadius: 8,
+      fontSize: 12,
+      fontWeight: 600,
+    },
+    demoBtn: {
+      background: isLight ? 'rgba(79, 70, 229, 0.08)' : 'rgba(99, 102, 241, 0.15)',
+      border: '1px solid rgba(79, 70, 229, 0.3)',
+      color: '#4f46e5',
+      padding: '11px 20px',
+      borderRadius: 10,
+      fontWeight: 700,
+      fontSize: 14,
+    },
+    themeToggleLanding: {
+      background: isLight ? '#ffffff' : '#1e293b',
+      border: `1px solid ${cardBorder}`,
+      color: text,
+      padding: '11px 18px',
+      borderRadius: 10,
+      fontSize: 13,
+      fontWeight: 600,
+    },
+    featuresGrid: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+      gap: 18,
+      textAlign: 'left',
+    },
+    featureCard: {
+      background: isLight ? '#ffffff' : 'rgba(17, 24, 39, 0.7)',
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 14,
+      padding: 24,
+      boxShadow: shadow,
+    },
+    featureTitle: { fontSize: 16, fontWeight: 700, marginBottom: 8, color: text },
+    featureDesc: { fontSize: 13, color: textMuted, lineHeight: 1.5 },
 
-  mainLayout: {
-    flex: 1,
-    display: 'flex',
-    overflow: 'hidden',
-  },
-  sidebar: {
-    width: 240,
-    backgroundColor: '#0b1120',
-    borderRight: '1px solid #1e293b',
-    display: 'flex',
-    flexDirection: 'column',
-    padding: '20px 14px',
-  },
-  newBtnContainer: { position: 'relative', marginBottom: 20 },
-  newButton: {
-    width: '100%',
-    height: 46,
-    borderRadius: 12,
-    background: 'linear-gradient(135deg, #6366f1, #4f46e5)',
-    color: '#fff',
-    fontWeight: 700,
-    fontSize: 15,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    boxShadow: '0 4px 14px rgba(99,102,241,0.3)',
-  },
-  newDropdown: {
-    position: 'absolute',
-    top: 52,
-    left: 0,
-    width: '100%',
-    backgroundColor: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 10,
-    padding: 6,
-    boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-    zIndex: 20,
-  },
-  dropdownItem: {
-    width: '100%',
-    padding: '10px 12px',
-    borderRadius: 6,
-    display: 'flex',
-    alignItems: 'center',
-    fontSize: 13,
-    fontWeight: 500,
-  },
-  navMenu: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-    flex: 1,
-  },
-  navItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-    padding: '10px 14px',
-    borderRadius: 10,
-    fontSize: 14,
-    color: '#94a3b8',
-    fontWeight: 500,
-  },
-  navItemActive: {
-    backgroundColor: '#1e293b',
-    color: '#f8fafc',
-    fontWeight: 600,
-  },
-  navIcon: { fontSize: 16 },
-  storageSection: {
-    backgroundColor: '#0f172a',
-    border: '1px solid #1e293b',
-    borderRadius: 12,
-    padding: 14,
-  },
-  storageHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  storageBarBg: {
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: '#1e293b',
-    overflow: 'hidden',
-    marginBottom: 8,
-  },
-  storageBarFill: {
-    height: '100%',
-    backgroundColor: '#6366f1',
-    borderRadius: 999,
-    transition: 'width 0.3s ease',
-  },
-  storageSubtext: { fontSize: 11, color: '#94a3b8' },
+    // App Container
+    appContainer: {
+      display: 'flex',
+      flexDirection: 'column',
+      height: '100vh',
+      backgroundColor: bg,
+      color: text,
+      overflow: 'hidden',
+      position: 'relative',
+    },
+    topHeader: {
+      height: 64,
+      backgroundColor: headerBg,
+      backdropFilter: 'blur(12px)',
+      borderBottom: `1px solid ${cardBorder}`,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: '0 24px',
+      zIndex: 20,
+      boxShadow: isLight ? '0 1px 3px rgba(0,0,0,0.03)' : 'none',
+    },
+    headerLeft: { display: 'flex', alignItems: 'center', gap: 20 },
+    brandGroup: { display: 'flex', alignItems: 'center', gap: 10 },
+    brandIconWrapper: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      background: 'linear-gradient(135deg, #4f46e5, #0284c7)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontSize: 18,
+      color: '#ffffff',
+    },
+    brandName: {
+      fontSize: 18,
+      fontWeight: 800,
+      color: text,
+      letterSpacing: '-0.3px',
+    },
+    headerCenter: { flex: 1, maxWidth: 580, margin: '0 32px' },
+    searchBar: {
+      position: 'relative',
+      display: 'flex',
+      alignItems: 'center',
+      width: '100%',
+    },
+    searchIcon: {
+      position: 'absolute',
+      left: 14,
+      fontSize: 14,
+      color: textMuted,
+      pointerEvents: 'none',
+    },
+    searchInput: {
+      width: '100%',
+      height: 40,
+      borderRadius: 10,
+      backgroundColor: inputBg,
+      border: `1px solid ${inputBorder}`,
+      padding: '0 38px',
+      fontSize: 14,
+      color: text,
+      transition: 'border-color 0.2s',
+    },
+    clearSearchBtn: {
+      position: 'absolute',
+      right: 12,
+      color: textMuted,
+      fontSize: 12,
+      padding: 4,
+    },
+    headerRight: { display: 'flex', alignItems: 'center', gap: 12 },
+    headerIconBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 10,
+      backgroundColor: inputBg,
+      border: `1px solid ${cardBorder}`,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontSize: 16,
+      cursor: 'pointer',
+    },
+    healthBadge: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      padding: '7px 14px',
+      backgroundColor: inputBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 20,
+      color: text,
+      cursor: 'pointer',
+    },
+    userProfileBtn: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      padding: '4px 10px 4px 6px',
+      borderRadius: 24,
+      backgroundColor: inputBg,
+      border: `1px solid ${cardBorder}`,
+      cursor: 'pointer',
+    },
+    avatar: {
+      width: 30,
+      height: 30,
+      borderRadius: '50%',
+      background: 'linear-gradient(135deg, #4f46e5, #06b6d4)',
+      color: '#fff',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontWeight: 700,
+      fontSize: 13,
+    },
+    userInfo: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start' },
+    userName: { fontSize: 13, fontWeight: 700, color: text },
+    userBadge: { fontSize: 10, color: textMuted, fontWeight: 500 },
 
-  mainContent: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    backgroundColor: '#090d16',
-    overflow: 'hidden',
-  },
-  contentHeader: {
-    height: 54,
-    borderBottom: '1px solid #1e293b',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0 24px',
-  },
-  breadcrumbBar: { display: 'flex', alignItems: 'center', gap: 6 },
-  breadcrumbItem: { display: 'flex', alignItems: 'center', gap: 6 },
-  breadcrumbSeparator: { color: '#475569', fontSize: 13 },
-  breadcrumbLink: { fontSize: 14 },
-  viewControls: { display: 'flex', alignItems: 'center', gap: 8 },
-  iconBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: '#94a3b8',
-    fontSize: 14,
-  },
-  iconBtnActive: { backgroundColor: '#1e293b', color: '#f8fafc' },
-  loadingBar: { height: 2, width: '100%', backgroundColor: '#1e293b', overflow: 'hidden' },
-  loadingAnimation: {
-    height: '100%',
-    width: '40%',
-    backgroundColor: '#6366f1',
-    animation: 'pulse 1s infinite alternate',
-  },
-  scrollableContent: {
-    flex: 1,
-    overflowY: 'auto',
-    padding: 24,
-  },
-  sectionHeading: {
-    fontSize: 14,
-    fontWeight: 700,
-    color: '#94a3b8',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-    marginBottom: 14,
-  },
+    // User Dropdown Menu
+    userMenuDropdown: {
+      position: 'absolute',
+      top: 48,
+      right: 0,
+      width: 280,
+      backgroundColor: cardBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 14,
+      padding: 16,
+      boxShadow: isLight ? '0 12px 32px rgba(0,0,0,0.12)' : '0 12px 36px rgba(0,0,0,0.6)',
+      zIndex: 50,
+    },
+    userMenuHeader: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 12,
+      marginBottom: 14,
+    },
+    userMenuStorage: {
+      padding: 10,
+      borderRadius: 8,
+      backgroundColor: inputBg,
+      marginBottom: 10,
+    },
+    userMenuDivider: {
+      height: 1,
+      backgroundColor: cardBorder,
+      margin: '10px 0',
+    },
+    userMenuItem: {
+      width: '100%',
+      padding: '9px 12px',
+      borderRadius: 8,
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      fontSize: 13,
+      fontWeight: 500,
+      color: text,
+      textAlign: 'left',
+      cursor: 'pointer',
+    },
 
-  foldersGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-    gap: 14,
-  },
-  folderCard: {
-    backgroundColor: '#0f172a',
-    border: '1px solid #1e293b',
-    borderRadius: 12,
-    padding: '12px 14px',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    cursor: 'pointer',
-  },
-  folderIcon: { fontSize: 20 },
-  folderName: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: 600,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  itemMenu: { display: 'flex', gap: 4 },
-  menuSmallBtn: { fontSize: 13, padding: 3, opacity: 0.7 },
+    mainLayout: {
+      flex: 1,
+      display: 'flex',
+      overflow: 'hidden',
+    },
+    sidebar: {
+      width: 250,
+      backgroundColor: sidebarBg,
+      borderRight: `1px solid ${cardBorder}`,
+      display: 'flex',
+      flexDirection: 'column',
+      padding: '20px 14px',
+    },
+    newBtnContainer: { position: 'relative', marginBottom: 20 },
+    newButton: {
+      width: '100%',
+      height: 48,
+      borderRadius: 12,
+      background: 'linear-gradient(135deg, #4f46e5, #4338ca)',
+      color: '#fff',
+      fontWeight: 700,
+      fontSize: 15,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      boxShadow: '0 4px 14px rgba(79, 70, 229, 0.28)',
+    },
+    newDropdown: {
+      position: 'absolute',
+      top: 54,
+      left: 0,
+      width: '100%',
+      backgroundColor: cardBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 12,
+      padding: 6,
+      boxShadow: shadow,
+      zIndex: 30,
+    },
+    dropdownItem: {
+      width: '100%',
+      padding: '11px 14px',
+      borderRadius: 8,
+      display: 'flex',
+      alignItems: 'center',
+      fontSize: 14,
+      fontWeight: 600,
+      color: text,
+      cursor: 'pointer',
+    },
+    navMenu: {
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 4,
+      flex: 1,
+    },
+    navItem: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 12,
+      padding: '11px 14px',
+      borderRadius: 10,
+      fontSize: 14,
+      color: textMuted,
+      fontWeight: 600,
+      cursor: 'pointer',
+    },
+    navItemActive: {
+      backgroundColor: isLight ? 'rgba(79, 70, 229, 0.08)' : 'rgba(99, 102, 241, 0.15)',
+      color: '#4f46e5',
+      fontWeight: 700,
+    },
+    navIcon: { fontSize: 18 },
+    storageSection: {
+      backgroundColor: isLight ? '#f8fafc' : '#141e33',
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 12,
+      padding: 14,
+    },
+    storageHeader: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      marginBottom: 8,
+    },
+    storageBarBg: {
+      height: 6,
+      borderRadius: 999,
+      backgroundColor: isLight ? '#e2e8f0' : '#1e293b',
+      overflow: 'hidden',
+      marginBottom: 8,
+    },
+    storageBarFill: {
+      height: '100%',
+      backgroundColor: '#4f46e5',
+      borderRadius: 999,
+      transition: 'width 0.3s ease',
+    },
+    storageSubtext: { fontSize: 11, color: textMuted },
 
-  filesGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-    gap: 16,
-  },
-  cardItem: {
-    backgroundColor: '#0f172a',
-    border: '1px solid #1e293b',
-    borderRadius: 14,
-    padding: 16,
-    display: 'flex',
-    flexDirection: 'column',
-    position: 'relative',
-  },
-  cardIconWrapper: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  cardTitle: {
-    fontSize: 14,
-    fontWeight: 600,
-    marginBottom: 4,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  cardMeta: { fontSize: 12, color: '#94a3b8', marginBottom: 14 },
-  cardActions: {
-    display: 'flex',
-    gap: 6,
-    marginTop: 'auto',
-    borderTop: '1px solid #1e293b',
-    paddingTop: 10,
-  },
-  actionBtn: {
-    flex: 1,
-    height: 30,
-    borderRadius: 6,
-    backgroundColor: '#1e293b',
-    fontSize: 12,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+    mainContent: {
+      flex: 1,
+      display: 'flex',
+      flexDirection: 'column',
+      backgroundColor: bg,
+      overflow: 'hidden',
+    },
+    contentHeader: {
+      height: 56,
+      borderBottom: `1px solid ${cardBorder}`,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: '0 24px',
+      backgroundColor: headerBg,
+    },
+    breadcrumbBar: { display: 'flex', alignItems: 'center', gap: 6 },
+    breadcrumbItem: { display: 'flex', alignItems: 'center', gap: 6 },
+    breadcrumbSeparator: { color: textMuted, fontSize: 14, padding: '0 2px' },
+    breadcrumbLink: { fontSize: 14, cursor: 'pointer' },
 
-  listView: {
-    backgroundColor: '#0f172a',
-    border: '1px solid #1e293b',
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  listHeader: {
-    display: 'flex',
-    padding: '12px 18px',
-    borderBottom: '1px solid #1e293b',
-    fontSize: 12,
-    fontWeight: 700,
-    color: '#94a3b8',
-    textTransform: 'uppercase',
-  },
-  listRow: {
-    display: 'flex',
-    alignItems: 'center',
-    padding: '12px 18px',
-    borderBottom: '1px solid rgba(255,255,255,0.03)',
-  },
+    viewControls: { display: 'flex', alignItems: 'center', gap: 8 },
+    iconBtn: {
+      padding: '6px 12px',
+      borderRadius: 8,
+      display: 'flex',
+      alignItems: 'center',
+      gap: 6,
+      color: textMuted,
+      fontSize: 13,
+      fontWeight: 600,
+      border: `1px solid ${cardBorder}`,
+      backgroundColor: inputBg,
+      cursor: 'pointer',
+    },
+    iconBtnActive: {
+      backgroundColor: isLight ? '#ffffff' : '#334155',
+      color: 'var(--color-primary)',
+      borderColor: 'var(--color-primary)',
+    },
+    loadingBar: { height: 2, width: '100%', backgroundColor: cardBorder, overflow: 'hidden' },
+    loadingAnimation: {
+      height: '100%',
+      width: '40%',
+      backgroundColor: '#4f46e5',
+      animation: 'pulse 1s infinite alternate',
+    },
+    scrollableContent: {
+      flex: 1,
+      overflowY: 'auto',
+      padding: 28,
+    },
+    sectionHeading: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: textMuted,
+      textTransform: 'uppercase',
+      letterSpacing: '0.06em',
+      marginBottom: 16,
+    },
 
-  emptyState: {
-    textAlign: 'center',
-    padding: '60px 20px',
-  },
+    foldersGrid: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))',
+      gap: 14,
+    },
+    folderCard: {
+      backgroundColor: cardBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 12,
+      padding: '12px 16px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 12,
+      cursor: 'pointer',
+      boxShadow: isLight ? '0 1px 3px rgba(0,0,0,0.03)' : 'none',
+      transition: 'transform 0.15s, border-color 0.15s',
+    },
+    folderName: {
+      flex: 1,
+      fontSize: 14,
+      fontWeight: 600,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+      color: text,
+    },
+    itemMenu: { display: 'flex', gap: 4 },
+    menuSmallBtn: {
+      fontSize: 13,
+      padding: '4px 6px',
+      borderRadius: 6,
+      cursor: 'pointer',
+      backgroundColor: isLight ? '#f1f5f9' : 'rgba(255,255,255,0.08)',
+    },
 
-  dragOverlay: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(10,14,26,0.85)',
-    backdropFilter: 'blur(8px)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 100,
-  },
-  dragBox: {
-    padding: 40,
-    borderRadius: 20,
-    border: '2px dashed #6366f1',
-    textAlign: 'center',
-    backgroundColor: 'rgba(99,102,241,0.08)',
-  },
+    filesGrid: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+      gap: 18,
+    },
+    cardItem: {
+      backgroundColor: cardBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 16,
+      padding: 18,
+      display: 'flex',
+      flexDirection: 'column',
+      boxShadow: shadow,
+      transition: 'transform 0.18s, box-shadow 0.18s',
+    },
+    cardIconWrapper: {
+      width: 46,
+      height: 46,
+      borderRadius: 12,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    cardTitle: {
+      fontSize: 14,
+      fontWeight: 700,
+      marginBottom: 4,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+      color: text,
+    },
+    cardMeta: {
+      fontSize: 12,
+      color: textMuted,
+      marginBottom: 14,
+      display: 'flex',
+      gap: 6,
+      alignItems: 'center',
+    },
+    cardActions: {
+      display: 'flex',
+      gap: 6,
+      marginTop: 'auto',
+      borderTop: `1px solid ${cardBorder}`,
+      paddingTop: 12,
+    },
+    cardActionBtn: {
+      flex: 1,
+      height: 32,
+      borderRadius: 8,
+      backgroundColor: isLight ? '#f1f5f9' : '#1e293b',
+      border: `1px solid ${cardBorder}`,
+      fontSize: 13,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      cursor: 'pointer',
+      transition: 'background 0.15s',
+    },
+    actionBtnPrimary: {
+      flex: 1,
+      height: 32,
+      borderRadius: 8,
+      backgroundColor: 'var(--color-primary)',
+      color: '#fff',
+      fontSize: 12,
+      fontWeight: 600,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      cursor: 'pointer',
+    },
+    actionBtnDanger: {
+      flex: 1,
+      height: 32,
+      borderRadius: 8,
+      backgroundColor: 'rgba(239, 68, 68, 0.12)',
+      color: 'var(--color-error)',
+      border: '1px solid rgba(239, 68, 68, 0.25)',
+      fontSize: 12,
+      fontWeight: 600,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      cursor: 'pointer',
+    },
 
-  uploadToast: {
-    position: 'fixed',
-    bottom: 24,
-    right: 24,
-    width: 320,
-    backgroundColor: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 12,
-    padding: 14,
-    boxShadow: '0 8px 30px rgba(0,0,0,0.5)',
-    zIndex: 90,
-  },
-  progressBarBg: {
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: '#0f172a',
-    overflow: 'hidden',
-  },
-  progressBarFill: {
-    height: '100%',
-    backgroundColor: '#06b6d4',
-    borderRadius: 999,
-    transition: 'width 0.2s',
-  },
+    listView: {
+      backgroundColor: cardBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 14,
+      overflow: 'hidden',
+      boxShadow: shadow,
+    },
+    listHeader: {
+      display: 'flex',
+      padding: '14px 20px',
+      borderBottom: `1px solid ${cardBorder}`,
+      fontSize: 12,
+      fontWeight: 700,
+      color: textMuted,
+      textTransform: 'uppercase',
+      letterSpacing: '0.05em',
+    },
+    listRow: {
+      display: 'flex',
+      alignItems: 'center',
+      padding: '14px 20px',
+      borderBottom: `1px solid ${cardBorder}`,
+    },
 
-  notificationsContainer: {
-    position: 'fixed',
-    top: 24,
-    right: 24,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-    zIndex: 95,
-  },
-  toast: {
-    backgroundColor: '#1e293b',
-    color: '#f8fafc',
-    padding: '12px 16px',
-    borderRadius: 8,
-    fontSize: 13,
-    boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
-  },
+    emptyState: {
+      textAlign: 'center',
+      padding: '70px 20px',
+    },
 
-  modalOverlay: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    backdropFilter: 'blur(6px)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 200,
-  },
-  modalContent: {
-    backgroundColor: '#0f172a',
-    border: '1px solid #1e293b',
-    borderRadius: 16,
-    padding: 24,
-    width: '100%',
-    maxWidth: 440,
-    boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
-  },
-  modalContentSmall: {
-    backgroundColor: '#0f172a',
-    border: '1px solid #1e293b',
-    borderRadius: 16,
-    padding: 24,
-    width: '100%',
-    maxWidth: 360,
-    boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
-  },
-  versionCard: {
-    backgroundColor: '#1e293b',
-    border: '1px solid #334155',
-    borderRadius: 8,
-    padding: 12,
-  },
-  modalHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  modalTitle: { fontSize: 18, fontWeight: 700 },
-  closeBtn: { fontSize: 16, color: '#94a3b8' },
-  modalActions: {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    gap: 10,
-    marginTop: 20,
-  },
-  form: { display: 'flex', flexDirection: 'column', gap: 14, marginTop: 14 },
-  inputGroup: { display: 'flex', flexDirection: 'column', gap: 6 },
-  label: { fontSize: 13, fontWeight: 600, color: '#cbd5e1' },
-  input: {
-    height: 42,
-    borderRadius: 8,
-    backgroundColor: '#1e293b',
-    border: '1px solid #334155',
-    padding: '0 14px',
-    fontSize: 14,
-    color: '#f8fafc',
-  },
-  modalSubmitBtn: {
-    height: 42,
-    borderRadius: 8,
-    backgroundColor: '#6366f1',
-    color: '#fff',
-    fontWeight: 700,
-    fontSize: 14,
-    marginTop: 6,
-  },
-  modalFooter: { textAlign: 'center', marginTop: 10 },
-  footerText: { fontSize: 13, color: '#94a3b8' },
-  footerLink: { color: '#38bdf8', cursor: 'pointer', fontWeight: 600, marginLeft: 4 },
-  errorAlert: {
-    backgroundColor: 'rgba(239,68,68,0.15)',
-    border: '1px solid rgba(239,68,68,0.3)',
-    color: '#fca5a5',
-    padding: '8px 12px',
-    borderRadius: 8,
-    fontSize: 13,
-    marginTop: 10,
-  },
-  healthRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    padding: '10px 0',
-    borderBottom: '1px solid #1e293b',
-    fontSize: 13,
-  },
+    dragOverlay: {
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      backgroundColor: isLight ? 'rgba(255,255,255,0.85)' : 'rgba(11, 15, 25, 0.85)',
+      backdropFilter: 'blur(8px)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 100,
+    },
+    dragBox: {
+      padding: 48,
+      borderRadius: 24,
+      border: '2px dashed #4f46e5',
+      textAlign: 'center',
+      backgroundColor: isLight ? 'rgba(79, 70, 229, 0.05)' : 'rgba(99, 102, 241, 0.1)',
+    },
+
+    uploadToast: {
+      position: 'fixed',
+      bottom: 24,
+      right: 24,
+      width: 340,
+      backgroundColor: cardBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 14,
+      padding: 16,
+      boxShadow: '0 10px 30px rgba(0,0,0,0.2)',
+      zIndex: 90,
+    },
+    progressBarBg: {
+      height: 6,
+      borderRadius: 999,
+      backgroundColor: isLight ? '#e2e8f0' : '#1e293b',
+      overflow: 'hidden',
+    },
+    progressBarFill: {
+      height: '100%',
+      backgroundColor: '#4f46e5',
+      borderRadius: 999,
+      transition: 'width 0.2s',
+    },
+
+    notificationsContainer: {
+      position: 'fixed',
+      top: 24,
+      right: 24,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 10,
+      zIndex: 120,
+    },
+    toast: {
+      backgroundColor: cardBg,
+      color: text,
+      padding: '12px 18px',
+      borderRadius: 10,
+      border: `1px solid ${cardBorder}`,
+      boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 12,
+      minWidth: 280,
+      maxWidth: 420,
+    },
+
+    modalOverlay: {
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      backdropFilter: 'blur(6px)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 200,
+    },
+    modalContent: {
+      backgroundColor: cardBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 18,
+      padding: 26,
+      width: '100%',
+      maxWidth: 480,
+      boxShadow: isLight ? '0 16px 40px rgba(0,0,0,0.15)' : '0 16px 40px rgba(0,0,0,0.6)',
+      color: text,
+    },
+    modalContentLarge: {
+      backgroundColor: cardBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 18,
+      padding: 28,
+      width: '100%',
+      maxWidth: 620,
+      boxShadow: isLight ? '0 16px 40px rgba(0,0,0,0.15)' : '0 16px 40px rgba(0,0,0,0.6)',
+      color: text,
+    },
+    modalContentSmall: {
+      backgroundColor: cardBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 16,
+      padding: 24,
+      width: '100%',
+      maxWidth: 380,
+      boxShadow: isLight ? '0 16px 40px rgba(0,0,0,0.15)' : '0 16px 40px rgba(0,0,0,0.6)',
+      color: text,
+    },
+    versionCard: {
+      backgroundColor: inputBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 10,
+      padding: 14,
+    },
+    modalHeader: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      marginBottom: 16,
+    },
+    modalTitle: { fontSize: 18, fontWeight: 800, color: text },
+    closeBtn: { fontSize: 18, color: textMuted, padding: 4, cursor: 'pointer' },
+    modalActions: {
+      display: 'flex',
+      justifyContent: 'flex-end',
+      gap: 10,
+      marginTop: 20,
+    },
+    form: { display: 'flex', flexDirection: 'column', gap: 14, marginTop: 14 },
+    inputGroup: { display: 'flex', flexDirection: 'column', gap: 6 },
+    label: { fontSize: 13, fontWeight: 700, color: text },
+    input: {
+      height: 42,
+      borderRadius: 10,
+      backgroundColor: inputBg,
+      border: `1px solid ${inputBorder}`,
+      padding: '0 14px',
+      fontSize: 14,
+      color: text,
+    },
+    selectInput: {
+      height: 38,
+      borderRadius: 8,
+      backgroundColor: inputBg,
+      border: `1px solid ${inputBorder}`,
+      padding: '0 10px',
+      fontSize: 13,
+      color: text,
+      cursor: 'pointer',
+    },
+    modalSubmitBtn: {
+      height: 44,
+      borderRadius: 10,
+      backgroundColor: '#4f46e5',
+      color: '#fff',
+      fontWeight: 700,
+      fontSize: 14,
+      marginTop: 6,
+      cursor: 'pointer',
+      boxShadow: '0 4px 12px rgba(79, 70, 229, 0.3)',
+    },
+    modalFooter: { textAlign: 'center', marginTop: 12 },
+    footerText: { fontSize: 13, color: textMuted },
+    footerLink: { color: 'var(--color-primary)', cursor: 'pointer', fontWeight: 700, marginLeft: 4 },
+    errorAlert: {
+      backgroundColor: 'rgba(239,68,68,0.12)',
+      border: '1px solid rgba(239,68,68,0.25)',
+      color: '#ef4444',
+      padding: '10px 14px',
+      borderRadius: 8,
+      fontSize: 13,
+      marginTop: 10,
+    },
+    healthRow: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      padding: '10px 0',
+      borderBottom: `1px solid ${cardBorder}`,
+      fontSize: 13,
+    },
+
+    // Share Modal specific styles
+    shareSectionBox: {
+      backgroundColor: inputBg,
+      border: `1px solid ${cardBorder}`,
+      borderRadius: 12,
+      padding: 16,
+      marginTop: 10,
+    },
+    shareOptionRow: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    checkboxLabel: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      fontSize: 13,
+      color: text,
+      cursor: 'pointer',
+    },
+
+    // Settings Modal specific styles
+    settingsTabsBar: {
+      display: 'flex',
+      gap: 8,
+      borderBottom: `1px solid ${cardBorder}`,
+      paddingBottom: 12,
+      marginBottom: 20,
+    },
+    settingsTabBtn: {
+      padding: '8px 14px',
+      borderRadius: 8,
+      fontSize: 13,
+      fontWeight: 600,
+      color: textMuted,
+      backgroundColor: 'transparent',
+      cursor: 'pointer',
+    },
+    settingsTabBtnActive: {
+      backgroundColor: isLight ? 'rgba(79, 70, 229, 0.1)' : 'rgba(99, 102, 241, 0.18)',
+      color: 'var(--color-primary)',
+      fontWeight: 700,
+    },
+    settingsRow: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      padding: '12px 14px',
+      borderRadius: 10,
+      backgroundColor: inputBg,
+      border: `1px solid ${cardBorder}`,
+    },
+    themeCard: {
+      border: '2px solid',
+      borderRadius: 14,
+      padding: 18,
+      cursor: 'pointer',
+      boxShadow: shadow,
+      textAlign: 'center',
+      transition: 'all 0.15s ease',
+    },
+  };
+};
+
+const themeStyles = {
+  light: createThemeStyles(true),
+  dark: createThemeStyles(false),
 };

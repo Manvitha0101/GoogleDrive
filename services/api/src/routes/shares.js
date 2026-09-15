@@ -116,6 +116,146 @@ router.get('/shared-with-me', requireAuth, async (req, res, next) => {
   }
 });
 
+// Helper function to format bytes
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(Number(bytes)) / Math.log(k));
+  return `${(Number(bytes) / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+function renderPublicSharePage(file, share, downloadUrl) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${encodeURIComponent(file.name)} — CloudVault Public Share</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: radial-gradient(ellipse at top, #f8fafc 0%, #e2e8f0 100%);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justifyContent: center;
+      padding: 24px;
+      color: #0f172a;
+    }
+    .card {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 20px;
+      padding: 36px 32px;
+      width: 100%;
+      maxWidth: 480px;
+      box-shadow: 0 20px 40px -10px rgba(0,0,0,0.08);
+      text-align: center;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(79, 70, 229, 0.08);
+      color: #4f46e5;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 6px 14px;
+      border-radius: 20px;
+      margin-bottom: 24px;
+    }
+    .file-icon {
+      font-size: 56px;
+      margin-bottom: 16px;
+    }
+    .file-name {
+      font-size: 20px;
+      font-weight: 800;
+      color: #0f172a;
+      word-break: break-word;
+      margin-bottom: 8px;
+    }
+    .meta {
+      font-size: 13px;
+      color: #64748b;
+      margin-bottom: 28px;
+    }
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .btn-download {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background: linear-gradient(135deg, #4f46e5, #4338ca);
+      color: #ffffff;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 15px;
+      padding: 14px 24px;
+      border-radius: 12px;
+      box-shadow: 0 4px 14px rgba(79, 70, 229, 0.35);
+      transition: all 0.2s;
+    }
+    .btn-download:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(79, 70, 229, 0.45);
+    }
+    .btn-copy {
+      background: #f1f5f9;
+      color: #334155;
+      border: 1px solid #cbd5e1;
+      padding: 12px 20px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .footer {
+      margin-top: 24px;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">☁️ CloudVault Public Link</div>
+    <div class="file-icon">📄</div>
+    <div class="file-name">${file.name}</div>
+    <div class="meta">
+      ${formatBytes(file.size)} · Shared by ${share.owner?.displayName || 'CloudVault User'} · ${share.permission === 'editor' ? 'Editor' : 'Viewer'}
+    </div>
+    <div class="actions">
+      <a href="${downloadUrl}" class="btn-download">
+        <span>⬇️</span>
+        <span>Download File (${formatBytes(file.size)})</span>
+      </a>
+      <button class="btn-copy" id="copyBtn" onclick="copyLink()">📋 Copy Share Link</button>
+    </div>
+  </div>
+  <div class="footer">Protected by CloudVault Security & Encryption</div>
+  <script>
+    function copyLink() {
+      navigator.clipboard.writeText(window.location.href);
+      const btn = document.getElementById('copyBtn');
+      btn.innerText = '✅ Copied to Clipboard!';
+      setTimeout(() => btn.innerText = '📋 Copy Share Link', 2500);
+    }
+  </script>
+</body>
+</html>`;
+}
+
 // ─── GET /shares/public/:token ───────────────────────────────────────────────
 router.get('/public/:token', async (req, res, next) => {
   try {
@@ -135,6 +275,19 @@ router.get('/public/:token', async (req, res, next) => {
       if (!file || file.isTrashed) {
         return res.status(404).json({ error: 'file_not_found', message: 'Shared file is no longer available' });
       }
+
+      const downloadUrl = `/api/shares/public/${share.shareToken}/download`;
+
+      // Check if direct download requested via ?download=true
+      if (req.query.download === 'true' || req.query.download === '1') {
+        return res.redirect(downloadUrl);
+      }
+
+      // Check if browser HTML navigation
+      if (req.headers.accept && req.headers.accept.includes('text/html') && !req.query.json) {
+        return res.send(renderPublicSharePage(file, share, downloadUrl));
+      }
+
       return res.json({
         item_type: 'file',
         file: {
@@ -144,12 +297,40 @@ router.get('/public/:token', async (req, res, next) => {
           mime_type: file.mimeType,
           shared_by: share.owner.displayName,
           permission: share.permission,
-          download_url: `/api/v1/files/${file.id}/download?token=${share.shareToken}`,
+          download_url: downloadUrl,
         },
       });
     }
 
     return res.json({ share });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /shares/public/:token/download ──────────────────────────────────────
+router.get('/public/:token/download', async (req, res, next) => {
+  try {
+    const share = await prisma.share.findUnique({
+      where: { shareToken: req.params.token },
+    });
+
+    if (!share || share.itemType !== 'file') {
+      return res.status(404).json({ error: 'share_not_found', message: 'Download link expired or not found' });
+    }
+
+    const file = await prisma.file.findUnique({ where: { id: share.itemId } });
+    if (!file || file.isTrashed) {
+      return res.status(404).json({ error: 'file_not_found', message: 'File is not available' });
+    }
+
+    const { getFileStream } = require('../lib/storage');
+    res.setHeader('Content-Type', file.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`);
+    res.setHeader('Content-Length', file.size.toString());
+
+    const stream = await getFileStream(file.storageKey);
+    stream.pipe(res);
   } catch (err) {
     next(err);
   }

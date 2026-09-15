@@ -13,7 +13,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5434}:5432"
     networks:
       - cloudvault_net
     healthcheck:
@@ -44,7 +44,7 @@ services:
 
   # ─── MinIO (S3-compatible object storage) ─────────────────────────────────────
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: cloudvault_minio
     restart: unless-stopped
     command: server /data --console-address ":9001"

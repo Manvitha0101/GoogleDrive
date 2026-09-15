@@ -1,7 +1,7 @@
 FROM node:20-alpine
 
-# Install dumb-init for proper PID1 signal handling
-RUN apk add --no-cache dumb-init
+# Install dumb-init and openssl for proper PID1 signal handling and Prisma engine support
+RUN apk add --no-cache dumb-init openssl
 
 # Set working directory
 WORKDIR /app

@@ -36,9 +36,14 @@ async function requireAuth(req, res, next) {
 
 async function optionalAuth(req, res, next) {
   try {
+    let token = null;
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
+      token = authHeader.split(' ')[1];
+    } else if (req.query && (req.query.auth_token || req.query.token || req.query.jwt)) {
+      token = req.query.auth_token || req.query.token || req.query.jwt;
+    }
+    if (token) {
       const decoded = verifyAccessToken(token);
       if (decoded) {
         req.user = decoded;
