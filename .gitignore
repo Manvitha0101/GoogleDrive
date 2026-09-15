@@ -1,0 +1,41 @@
+# CloudVault — Dependencies & Secrets
+node_modules/
+.env
+*.env.local
+*.env.*.local
+
+# Build outputs
+dist/
+build/
+.next/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker volumes (local dev data)
+postgres_data/
+redis_data/
+minio_data/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Prisma generated (regenerated at build time)
+services/api/node_modules/
+services/notification/node_modules/
+frontend/node_modules/

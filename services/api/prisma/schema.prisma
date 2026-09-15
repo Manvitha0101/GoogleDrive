@@ -1,0 +1,134 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Prisma Schema — CloudVault
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  displayName  String   @map("display_name")
+  passwordHash String?  @map("password_hash")
+  avatarUrl    String?  @map("avatar_url")
+  storageUsed  BigInt   @default(0) @map("storage_used")
+  storageQuota BigInt   @default(15000000000) @map("storage_quota") // 15 GB
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  folders        Folder[]
+  files          File[]
+  fileVersions   FileVersion[]
+  ownedShares    Share[]        @relation("OwnedShares")
+  receivedShares Share[]        @relation("ReceivedShares")
+  notifications  Notification[]
+
+  @@map("users")
+}
+
+model Folder {
+  id        String    @id @default(uuid())
+  name      String
+  ownerId   String    @map("owner_id")
+  owner     User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  parentId  String?   @map("parent_id")
+  parent    Folder?   @relation("FolderHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Folder[]  @relation("FolderHierarchy")
+  path      String?
+  isTrashed Boolean   @default(false) @map("is_trashed")
+  trashedAt DateTime? @map("trashed_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  files File[]
+
+  @@index([ownerId])
+  @@index([parentId])
+  @@map("folders")
+}
+
+model File {
+  id         String    @id @default(uuid())
+  name       String
+  ownerId    String    @map("owner_id")
+  owner      User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  folderId   String?   @map("folder_id")
+  folder     Folder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  mimeType   String    @map("mime_type")
+  size       BigInt
+  storageKey String    @map("storage_key")
+  checksum   String?
+  isTrashed  Boolean   @default(false) @map("is_trashed")
+  trashedAt  DateTime? @map("trashed_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  versions FileVersion[]
+
+  @@index([ownerId])
+  @@index([folderId])
+  @@index([storageKey])
+  @@index([checksum])
+  @@map("files")
+}
+
+model FileVersion {
+  id            String   @id @default(uuid())
+  fileId        String   @map("file_id")
+  file          File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  versionNumber Int      @map("version_number")
+  storageKey    String   @map("storage_key")
+  size          BigInt
+  checksum      String?
+  createdById   String   @map("created_by_id")
+  createdBy     User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([fileId, versionNumber])
+  @@map("file_versions")
+}
+
+model Share {
+  id           String    @id @default(uuid())
+  itemId       String    @map("item_id")
+  itemType     String    @map("item_type") // 'file' | 'folder'
+  ownerId      String    @map("owner_id")
+  owner        User      @relation("OwnedShares", fields: [ownerId], references: [id], onDelete: Cascade)
+  sharedWithId String?   @map("shared_with_id")
+  sharedWith   User?     @relation("ReceivedShares", fields: [sharedWithId], references: [id], onDelete: SetNull)
+  shareToken   String?   @unique @map("share_token")
+  permission   String    @default("viewer") // 'viewer' | 'editor'
+  expiresAt    DateTime? @map("expires_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@index([itemId, itemType])
+  @@index([sharedWithId])
+  @@map("shares")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // 'file_shared', 'upload_complete', 'file_updated'
+  payload   Json?
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+model SystemCheck {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("system_checks")
+}

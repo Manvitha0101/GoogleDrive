@@ -1,0 +1,158 @@
+version: "3.8"
+
+services:
+  # ─── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: cloudvault_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cloudvault}
+      POSTGRES_USER: ${POSTGRES_USER:-cloudvault}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cloudvault_secret_123}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - cloudvault_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cloudvault} -d ${POSTGRES_DB:-cloudvault}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ─── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: cloudvault_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - cloudvault_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ─── MinIO (S3-compatible object storage) ─────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: cloudvault_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-cloudvault}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-cloudvault_secret_123}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO web console
+    networks:
+      - cloudvault_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ─── API Service ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: cloudvault_api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cloudvault}:${POSTGRES_PASSWORD:-cloudvault_secret_123}@postgres:5432/${POSTGRES_DB:-cloudvault}
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_USE_SSL: "false"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - cloudvault_net
+
+  # ─── Notification Service (WebSocket / Socket.IO) ─────────────────────────────
+  notification:
+    build:
+      context: ./services/notification
+      dockerfile: Dockerfile
+    container_name: cloudvault_notification
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8001:8001"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - cloudvault_net
+
+  # ─── Frontend (Vite + React) ──────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cloudvault_frontend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      VITE_API_PROXY_TARGET: http://api:8000
+      VITE_WS_PROXY_TARGET: http://notification:8001
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+    networks:
+      - cloudvault_net
+
+  # ─── Nginx (Reverse Proxy / Load Balancer) ────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: cloudvault_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - api
+      - notification
+    networks:
+      - cloudvault_net
+
+# ─── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+# ─── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  cloudvault_net:
+    driver: bridge
